@@ -445,8 +445,13 @@ const App = () => {
   };
 
   const unreadMessagesCount = useMemo(() => {
-    return conversations.reduce((acc, c) => acc + (c.unreadCount || 0), 0);
-  }, [conversations]);
+    return conversations.reduce((acc, c) => {
+      if (c.lastMessageSenderId !== auth.currentUser?.uid) {
+        return acc + (c.unreadCount || 0);
+      }
+      return acc;
+    }, 0);
+  }, [conversations, auth.currentUser?.uid]);
 
   const t = (en: string, ta: string) => {
     if (language === 'ta') return ta;
@@ -3573,7 +3578,7 @@ const ChatListScreen = ({ conversations, onNavigate, onBack, language }: { conve
                   );
                 })()}
               </div>
-              {convo.unreadCount > 0 && (
+              {convo.unreadCount > 0 && convo.lastMessageSenderId !== auth.currentUser?.uid && (
                 <div className="w-5 h-5 bg-primary text-white text-[10px] font-black rounded-full flex items-center justify-center">
                   {convo.unreadCount}
                 </div>
