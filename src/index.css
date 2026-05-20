@@ -1,0 +1,38 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Tamil:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", "Noto Sans Tamil", ui-sans-serif, system-ui, sans-serif;
+  --color-primary: #1D9E75;
+}
+
+body {
+  @apply bg-[#eef5f1] text-gray-900 font-sans antialiased selection:bg-primary selection:text-white overflow-x-hidden;
+}
+
+.mobile-container {
+  @apply mx-auto min-h-screen w-full max-w-[430px] bg-white shadow-2xl relative flex flex-col border-x border-gray-200/50;
+}
+
+/* Custom Hide Scrollbar */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@keyframes marquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.animate-marquee {
+  animation: marquee 20s linear infinite;
+  display: flex;
+}
+
+.animate-marquee:hover {
+  animation-play-state: paused;
+}

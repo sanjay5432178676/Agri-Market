@@ -1,0 +1,157 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helper Functions ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Entity Validations ---
+
+    function isValidUser(data) {
+      return data.name is string && data.name.size() <= 100 &&
+             (!('location' in data) || (data.location is string && data.location.size() <= 200)) &&
+             (!('state' in data) || (data.state is string && data.state.size() <= 100)) &&
+             (!('district' in data) || (data.district is string && data.district.size() <= 100)) &&
+             (!('subDistrict' in data) || (data.subDistrict is string && data.subDistrict.size() <= 100)) &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() <= 20)) &&
+             (!('photoEmoji' in data) || (data.photoEmoji is string && data.photoEmoji.size() <= 10)) &&
+             (!('hasSeenTutorial' in data) || data.hasSeenTutorial is bool) &&
+             (!('language' in data) || (data.language is string && data.language.size() <= 10)) &&
+             (!('memberSince' in data) || (data.memberSince is string && data.memberSince.size() <= 50)) &&
+             (!('isVerified' in data) || data.isVerified is bool);
+    }
+
+    function isValidListing(data) {
+      return data.titleEn is string && data.titleEn.size() <= 200 &&
+             data.titleTa is string && data.titleTa.size() <= 200 &&
+             data.category is string &&
+             data.price is number &&
+             data.farmerId == request.auth.uid &&
+             (!('unit' in data) || (data.unit is string && data.unit.size() <= 20)) &&
+             (!('quantity' in data) || (data.quantity is string && data.quantity.size() <= 50)) &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 2000)) &&
+             (!('location' in data) || (data.location is string && data.location.size() <= 200)) &&
+             (!('district' in data) || (data.district is string && data.district.size() <= 100)) &&
+             (!('photoEmoji' in data) || (data.photoEmoji is string && data.photoEmoji.size() <= 10)) &&
+             (!('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() <= 1048576)) &&
+             (!('farmerName' in data) || (data.farmerName is string && data.farmerName.size() <= 100)) &&
+             (!('isVerified' in data) || data.isVerified is bool) &&
+             (!('views' in data) || data.views is number);
+    }
+
+    // --- Collection Rules ---
+
+    match /users/{userId} {
+      allow get: if isSignedIn();
+      allow list: if isSignedIn(); // Insecure but needed for user discovery/reviews. Ideally limited.
+      allow create: if isOwner(userId) && isValidUser(incoming()) &&
+                    incoming().createdAt == request.time &&
+                    incoming().updatedAt == request.time;
+      allow update: if isOwner(userId) && isValidUser(incoming()) &&
+                    incoming().updatedAt == request.time &&
+                    incoming().createdAt == existing().createdAt &&
+                    incoming().diff(existing()).affectedKeys().hasOnly([
+                      'name', 'location', 'phone', 'photoEmoji', 'updatedAt', 
+                      'state', 'district', 'subDistrict', 'language', 'hasSeenTutorial'
+                    ]);
+      // Rating updates from others
+      allow update: if isSignedIn() && 
+                    incoming().diff(existing()).affectedKeys().hasOnly(['rating', 'reviewCount']) &&
+                    (!('rating' in incoming()) || (incoming().rating is number)) &&
+                    (!('reviewCount' in incoming()) || (incoming().reviewCount is number));
+
+      match /reviews/{reviewId} {
+        allow read: if true;
+        allow create: if isSignedIn() && 
+                      incoming().fromUserId == request.auth.uid && 
+                      incoming().toUserId == userId &&
+                      incoming().rating is number &&
+                      incoming().rating >= 1 && incoming().rating <= 5 &&
+                      incoming().createdAt == request.time;
+        allow delete: if isSignedIn() && existing().fromUserId == request.auth.uid;
+      }
+
+      match /wishlist/{listingId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && 
+                      incoming().userId == request.auth.uid &&
+                      incoming().listingId == listingId &&
+                      incoming().createdAt == request.time;
+        allow delete: if isOwner(userId);
+      }
+    }
+
+    match /listings/{listingId} {
+      allow read: if true;
+      allow create: if isSignedIn() && isValidListing(incoming()) && 
+                    incoming().createdAt == request.time &&
+                    incoming().updatedAt == request.time;
+      allow update: if isSignedIn() && existing().farmerId == request.auth.uid && 
+                    isValidListing(incoming()) &&
+                    incoming().updatedAt == request.time &&
+                    incoming().farmerId == existing().farmerId &&
+                    incoming().createdAt == existing().createdAt &&
+                    incoming().diff(existing()).affectedKeys().hasOnly([
+                      'titleEn', 'titleTa', 'category', 'price', 'unit', 'quantity', 
+                      'phone', 'description', 'photoEmoji', 'district', 'location', 
+                      'updatedAt', 'farmerName', 'postedDate', 'imageUrl'
+                    ]);
+      // Views update can be allowed if app needs it, but rules usually block client increments.
+      // If we allow it, it should be isolated.
+      allow delete: if isSignedIn() && existing().farmerId == request.auth.uid;
+    }
+
+    match /mandiPrices/{priceId} {
+      allow read: if true;
+    }
+
+    match /conversations/{convoId} {
+      allow read: if isSignedIn() && (request.auth.uid in existing().participants);
+      allow create: if isSignedIn() && (request.auth.uid in incoming().participants) &&
+                    incoming().createdAt == request.time &&
+                    incoming().updatedAt == request.time;
+      allow update: if isSignedIn() && (request.auth.uid in existing().participants) &&
+                    incoming().diff(existing()).affectedKeys().hasOnly([
+                      'lastMessage', 'lastMessageTime', 'updatedAt', 'unreadCount', 
+                      'lastMessageSenderId', 'typing', 'participantNames'
+                    ]);
+      
+      match /messages/{messageId} {
+        allow read: if isSignedIn() && (request.auth.uid in get(/databases/$(database)/documents/conversations/$(convoId)).data.participants);
+        allow create: if isSignedIn() && 
+                       (request.auth.uid in get(/databases/$(database)/documents/conversations/$(convoId)).data.participants) &&
+                       incoming().senderId == request.auth.uid &&
+                       incoming().text is string &&
+                       incoming().createdAt == request.time;
+        allow update: if isSignedIn() && (request.auth.uid in get(/databases/$(database)/documents/conversations/$(convoId)).data.participants) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['isRead', 'isDelivered']);
+      }
+    }
+
+    match /admins/{adminId} {
+      allow read: if isSignedIn() && request.auth.uid == adminId;
+    }
+  }
+}

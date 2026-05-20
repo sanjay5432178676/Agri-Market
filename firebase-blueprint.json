@@ -1,0 +1,147 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile data",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "location": { "type": "string" },
+        "state": { "type": "string" },
+        "district": { "type": "string" },
+        "subDistrict": { "type": "string" },
+        "phone": { "type": "string" },
+        "photoEmoji": { "type": "string" },
+        "isVerified": { "type": "boolean" },
+        "memberSince": { "type": "string" },
+        "rating": { "type": "number" },
+        "activeListings": { "type": "number" },
+        "totalSales": { "type": "number" },
+        "profileViews": { "type": "number" },
+        "hasSeenTutorial": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name"]
+    },
+    "Listing": {
+      "title": "Listing",
+      "description": "Market listing for crops, equipment, etc.",
+      "type": "object",
+      "properties": {
+        "titleEn": { "type": "string" },
+        "titleTa": { "type": "string" },
+        "category": { "type": "string" },
+        "price": { "type": "number" },
+        "unit": { "type": "string" },
+        "quantity": { "type": "string" },
+        "farmerName": { "type": "string" },
+        "farmerId": { "type": "string" },
+        "location": { "type": "string" },
+        "district": { "type": "string" },
+        "description": { "type": "string" },
+        "photoEmoji": { "type": "string" },
+        "isVerified": { "type": "boolean" },
+        "postedDate": { "type": "string" },
+        "views": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "MandiPrice": {
+      "title": "MandiPrice",
+      "description": "Daily market prices",
+      "type": "object",
+      "properties": {
+        "cropTa": { "type": "string" },
+        "cropEn": { "type": "string" },
+        "min": { "type": "number" },
+        "max": { "type": "number" },
+        "modal": { "type": "number" },
+        "change": { "type": "number" },
+        "location": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Conversation": {
+      "title": "Conversation",
+      "description": "Chat conversation between two users",
+      "type": "object",
+      "properties": {
+        "participants": { "type": "array", "items": { "type": "string" } },
+        "participantNames": { "type": "object" },
+        "lastMessage": { "type": "string" },
+        "lastMessageTime": { "type": "string", "format": "date-time" },
+        "typing": { "type": "object" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Individual chat message",
+      "type": "object",
+      "properties": {
+        "senderId": { "type": "string" },
+        "text": { "type": "string" },
+        "isRead": { "type": "boolean" },
+        "isDelivered": { "type": "boolean" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Review": {
+      "title": "Review",
+      "description": "User review and rating",
+      "type": "object",
+      "properties": {
+        "fromUserId": { "type": "string" },
+        "fromUserName": { "type": "string" },
+        "toUserId": { "type": "string" },
+        "rating": { "type": "number" },
+        "comment": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["fromUserId", "toUserId", "rating"]
+    },
+    "WishlistItem": {
+      "title": "WishlistItem",
+      "description": "A product favorited by a user",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "listingId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "listingId"]
+    }
+  },
+  "firestore": {
+    "users": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "listings": {
+      "schema": "Listing",
+      "description": "Crop and equipment listings"
+    },
+    "mandiPrices": {
+      "schema": "MandiPrice",
+      "description": "Market price data"
+    },
+    "conversations": {
+      "schema": "Conversation",
+      "description": "Chat conversations"
+    },
+    "conversations/{convoId}/messages": {
+      "schema": "Message",
+      "description": "Messages within a conversation"
+    },
+    "users/{userId}/reviews": {
+      "schema": "Review",
+      "description": "Reviews for a specific user"
+    },
+    "users/{userId}/wishlist": {
+      "schema": "WishlistItem",
+      "description": "User's favorited listings"
+    }
+  }
+}
