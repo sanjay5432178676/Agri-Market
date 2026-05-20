@@ -44,7 +44,11 @@ import {
   Facebook,
   Twitter,
   Maximize,
-  Images
+  Images,
+  Archive,
+  Trash,
+  MoreVertical,
+  MoreHorizontal
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { onAuthStateChanged, signOut, GoogleAuthProvider, signInWithPopup, signInAnonymously, updateProfile, RecaptchaVerifier, signInWithPhoneNumber, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
@@ -139,6 +143,8 @@ const App = () => {
   const [wishlist, setWishlist] = useState<string[]>([]);
   const [inAppNotification, setInAppNotification] = useState<{ title: string, body: string, unreadCount?: number, isTyping?: boolean, data?: any } | null>(null);
   const notificationTimeoutRef = useRef<any>(null);
+  const lastProfileSubDistrictRef = useRef<string | null>(null);
+  const lastConversationsStateRef = useRef<Map<string, { lastMessage: string, unreadCount: number, isTyping: boolean }>>(new Map());
 
   // Persist pendingRole & language
   useEffect(() => {
@@ -210,8 +216,9 @@ const App = () => {
           setLanguage(data.language);
         }
         
-        if (data.subDistrict && !activeSubDistrict) {
+        if (data.subDistrict && lastProfileSubDistrictRef.current !== data.subDistrict) {
           setActiveSubDistrict(data.subDistrict);
+          lastProfileSubDistrictRef.current = data.subDistrict;
         }
         
         // Completeness check - ensure all required profile fields are present
@@ -247,6 +254,58 @@ const App = () => {
 
     return () => unsubscribeUser();
   }, [isLoggedIn, pendingRole, language]); 
+
+
+
+  // Track current user's online and active status
+  useEffect(() => {
+    if (!isLoggedIn || !auth.currentUser) return;
+    const uid = auth.currentUser.uid;
+    const userRef = doc(db, 'users', uid);
+
+    const updateStatus = async (online: boolean) => {
+      try {
+        await updateDoc(userRef, {
+          isOnline: online,
+          lastActive: Date.now()
+        });
+      } catch (e) {
+        console.warn("Could not update online status:", e);
+      }
+    };
+
+    // Mark online on mount / login
+    updateStatus(true);
+
+    // Set up periodic heartbeat update every 25 seconds
+    const interval = setInterval(() => {
+      updateStatus(true);
+    }, 25000);
+
+    // Tab visibility handling
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        updateStatus(false);
+      } else {
+        updateStatus(true);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // Handle unload / beforeunload or tab close
+    const handleUnload = () => {
+      updateStatus(false);
+    };
+    window.addEventListener('beforeunload', handleUnload);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('beforeunload', handleUnload);
+      updateStatus(false);
+    };
+  }, [isLoggedIn]);
 
   // Real-time Data Listeners
   useEffect(() => {
@@ -286,32 +345,32 @@ const App = () => {
         const currentUserId = auth.currentUser?.uid;
         
         snapshot.docChanges().forEach((change) => {
+          const data = change.doc.data();
+          const convoId = change.doc.id;
+          const otherParticipantId = data.participants.find((p: string) => p !== currentUserId);
+          const typingTime = data.typing?.[otherParticipantId] || 0;
+          const currentlyTyping = Date.now() - typingTime < 5000;
+
           if (change.type === 'modified') {
-            const data = change.doc.data();
-            const convoId = change.doc.id;
-            
-            const otherParticipantId = data.participants.find((p: string) => p !== currentUserId);
+            const pState = lastConversationsStateRef.current.get(convoId);
+            const prevUnreadCount = pState?.unreadCount ?? 0;
+            const prevLastMessage = pState?.lastMessage ?? '';
+            const prevIsTyping = pState?.isTyping ?? false;
+
             const isFromOther = data.lastMessageSenderId !== currentUserId;
             const isNotActiveRoom = activeConversationRef.current?.id !== convoId;
             const isHidden = document.visibilityState === 'hidden';
 
-            // Typing detection
-            const typingTime = data.typing?.[otherParticipantId] || 0;
-            const currentlyTyping = Date.now() - typingTime < 5000;
-            
             if (otherParticipantId && (isNotActiveRoom || isHidden)) {
               const senderName = data.participantNames?.[otherParticipantId] || (language === 'ta' ? 'பயனர்' : 'User');
               const avatar = data.participantAvatars?.[otherParticipantId] || '🌱';
               
-              if (currentlyTyping && !isFromOther) {
-                // If they are typing (and haven't sent the last message yet)
-                triggerNotification(senderName, language === 'ta' ? 'தட்டச்சு செய்கிறது...' : 'typing...', {
-                  id: convoId,
-                  participantName: senderName,
-                  participantAvatar: avatar,
-                  ...data
-                }, true, data.unreadCount);
-              } else if (isFromOther) {
+              const isNewMessage = isFromOther && (
+                data.unreadCount > prevUnreadCount || 
+                (data.lastMessage !== prevLastMessage && data.lastMessageSenderId === otherParticipantId)
+              );
+
+              if (isNewMessage) {
                 // Actual message received
                 triggerNotification(senderName, data.lastMessage || 'New message', {
                   id: convoId,
@@ -319,12 +378,27 @@ const App = () => {
                   participantAvatar: avatar,
                   ...data
                 }, false, data.unreadCount);
-              } else {
+              } else if (currentlyTyping) {
+                // If they are typing (and haven't sent the last message yet)
+                triggerNotification(senderName, language === 'ta' ? 'தட்டச்சு செய்கிறது...' : 'typing...', {
+                  id: convoId,
+                  participantName: senderName,
+                  participantAvatar: avatar,
+                  ...data
+                }, true, data.unreadCount);
+              } else if (prevIsTyping && !currentlyTyping) {
                 // Not typing and no news
                 setInAppNotification(prev => (prev?.isTyping && prev?.data?.id === convoId) ? null : prev);
               }
             }
           }
+
+          // Always persist the state of this conversation
+          lastConversationsStateRef.current.set(convoId, {
+            unreadCount: data.unreadCount || 0,
+            lastMessage: data.lastMessage || '',
+            isTyping: currentlyTyping
+          });
         });
 
         const docs = snapshot.docs.map(doc => {
@@ -634,7 +708,9 @@ const App = () => {
         isRead: false,
         isDelivered: false,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        createdAt: serverTimestamp()
+        createdAt: serverTimestamp(),
+        archivedForUsers: {},
+        deletedForUsers: {}
       });
 
       await updateDoc(doc(db, 'conversations', convoId), {
@@ -1144,12 +1220,7 @@ const HomeScreen = ({
     return Array.from(new Set(list));
   }, [user?.state, user?.district, user?.subDistrict, user?.location, user?.district, user?.state, activeSubDistrict]);
 
-  // Synchronize activeSubDistrict if user profile changes and it wasn't set
-  useEffect(() => {
-    if (user?.subDistrict && activeSubDistrict === 'Gobichettipalayam' && user.subDistrict !== 'Gobichettipalayam') {
-      setActiveSubDistrict(user.subDistrict);
-    }
-  }, [user?.subDistrict]);
+
 
   const rawListings = listings as any[];
   const displayPrices = mandiPrices;
@@ -1162,13 +1233,34 @@ const HomeScreen = ({
     });
   }, [rawListings, activeSubDistrict, activeCategory]);
 
+  const getSubDistrictLabel = (name: string, lang: 'ta' | 'en') => {
+    if (lang === 'en') return name;
+    const mapping: Record<string, string> = {
+      'Gobichettipalayam': 'கோபிசெட்டிபாளையம்',
+      'Kollam': 'கொல்லம்',
+      'Perundurai': 'பெருந்துறை',
+      'Bhavani': 'பவானி',
+      'Sathyamangalam': 'சத்தியமங்கலம்',
+      'Anthiyur': 'அந்திவூர்',
+      'Kodumudi': 'கொடுமுடி',
+      'Modakkurichi': 'மொடக்குறிச்சி',
+      'Erode': 'ஈரோடு',
+      'Coimbatore': 'கோயம்புத்தூர்',
+      'Salem': 'சேலம்'
+    };
+    return mapping[name] || name;
+  };
+
+  const profileSubDistrict = user?.subDistrict || (user?.location ? user.location.split(',')[0].trim() : '') || 'Gobichettipalayam';
+  const profileSubDistrictLabel = getSubDistrictLabel(profileSubDistrict, language);
+
   const subDistrictName = activeSubDistrict || user?.subDistrict || (language === 'ta' ? 'அனைத்தும்' : 'Select Location');
 
   return (
     <div id="home-screen">
       <SectionHeader 
         title={language === 'ta' ? 'அக்ரி மார்க்கெட்' : 'AgriMarket'} 
-        subtitle={language === 'ta' ? `விவசாய சந்தை - ${subDistrictName}` : `Agri Market - ${subDistrictName}`} 
+        subtitle={language === 'ta' ? `விவசாய சந்தை - ${profileSubDistrictLabel}` : `Agri Market - ${profileSubDistrict}`} 
         onNotify={() => onNavigate('Notifications')}
         onWishlist={() => onNavigate('Wishlist')}
         wishlistCount={wishlist.length}
@@ -1375,8 +1467,8 @@ const HomeScreen = ({
 
             <div className="flex flex-col gap-2">
               {[
-                { name: 'Andhra Pradesh', labelTa: 'ஆந்திரா பிரதேசம்' },
-                { name: 'Gopichetti Palayam', labelTa: 'கோபிசெட்டிபாளையம்' },
+                { name: 'Kollam', labelTa: 'கொல்லம்' },
+                { name: 'Gobichettipalayam', labelTa: 'கோபிசெட்டிபாளையம்' },
                 { name: 'Perundurai', labelTa: 'பெருந்துறை' }
               ].map(preset => (
                 <button
@@ -1384,10 +1476,6 @@ const HomeScreen = ({
                   onClick={() => {
                     const finalName = preset.name;
                     setActiveSubDistrict(finalName);
-                    if (user?.uid) {
-                      const userRef = doc(db, 'users', user.uid);
-                      updateDoc(userRef, { subDistrict: finalName, location: finalName }).catch(() => {});
-                    }
                     setShowLocationModal(false);
                   }}
                   className={`flex justify-between items-center p-3 rounded-2xl border transition-all text-xs font-black uppercase tracking-wider ${
@@ -1421,10 +1509,6 @@ const HomeScreen = ({
                     if (customLocationInput.trim()) {
                       const finalName = customLocationInput.trim();
                       setActiveSubDistrict(finalName);
-                      if (user?.uid) {
-                        const userRef = doc(db, 'users', user.uid);
-                        updateDoc(userRef, { subDistrict: finalName, location: finalName }).catch(() => {});
-                      }
                       setShowLocationModal(false);
                       setCustomLocationInput('');
                     }
@@ -2805,12 +2889,15 @@ const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, se
           const data = docSnap.data();
           setProfileData(data);
           if (isOwnProfile) {
+            const defaultSubDistrict = data.subDistrict || (data.location ? data.location.split(',')[0].trim() : 'Gobichettipalayam');
+            const defaultDistrict = data.district || 'Erode';
+            const defaultState = data.state || 'Tamil Nadu';
             setEditForm({
               name: data.name || user.name || '',
-              location: data.location || 'Gobichettipalayam',
-              state: data.state || 'Tamil Nadu',
-              district: data.district || 'Erode',
-              subDistrict: data.subDistrict || 'Gobichettipalayam',
+              location: data.location || `${defaultSubDistrict}, ${defaultDistrict}`,
+              state: defaultState,
+              district: defaultDistrict,
+              subDistrict: defaultSubDistrict,
               phone: data.phone || '',
               photoEmoji: data.photoEmoji || '👨‍🌾'
             });
@@ -2892,13 +2979,14 @@ const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, se
       });
 
       // Update Firestore User Document
+      const finalLocation = `${editForm.subDistrict}, ${editForm.district}`;
       const userRef = doc(db, 'users', user.uid);
       await updateDoc(userRef, {
         name: editForm.name,
         state: editForm.state,
         district: editForm.district,
         subDistrict: editForm.subDistrict,
-        location: `${editForm.subDistrict}, ${editForm.district}`,
+        location: finalLocation,
         phone: editForm.phone,
         photoEmoji: editForm.photoEmoji,
         updatedAt: serverTimestamp()
@@ -2906,7 +2994,8 @@ const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, se
 
       setProfileData({
         ...profileData,
-        ...editForm
+        ...editForm,
+        location: finalLocation
       });
 
       // Also update name in all listings by this user
@@ -2914,6 +3003,9 @@ const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, se
       const listingsSnap = await getDocs(listingsQuery);
       const listingUpdates = listingsSnap.docs.map(d => updateDoc(doc(db, 'listings', d.id), { 
         farmerName: editForm.name,
+        location: finalLocation,
+        district: editForm.district,
+        subDistrict: editForm.subDistrict,
         updatedAt: serverTimestamp()
       }));
       
@@ -2936,7 +3028,8 @@ const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, se
       if (setUser) {
         setUser((prev: any) => ({
           ...prev,
-          name: editForm.name
+          ...editForm,
+          location: finalLocation
         }));
       }
       
@@ -3073,7 +3166,7 @@ const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, se
                   <select 
                     className="w-full p-3 bg-gray-50 border border-gray-100 rounded-2xl outline-primary font-bold text-sm"
                     value={editForm.state}
-                    onChange={(e) => setEditForm({...editForm, state: e.target.value, district: '', subDistrict: ''})}
+                    onChange={(e) => setEditForm({...editForm, state: e.target.value, district: '', subDistrict: '', location: ''})}
                   >
                     <option value="">Select State</option>
                     {LOCATION_DATA.map(s => <option key={s.state} value={s.state}>{s.state}</option>)}
@@ -3086,7 +3179,7 @@ const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, se
                     className="w-full p-3 bg-gray-50 border border-gray-100 rounded-2xl outline-primary font-bold text-sm disabled:opacity-50"
                     disabled={!editForm.state}
                     value={editForm.district}
-                    onChange={(e) => setEditForm({...editForm, district: e.target.value, subDistrict: ''})}
+                    onChange={(e) => setEditForm({...editForm, district: e.target.value, subDistrict: '', location: ''})}
                   >
                     <option value="">Select District</option>
                     {availableDistricts.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
@@ -3099,7 +3192,14 @@ const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, se
                     className="w-full p-3 bg-gray-50 border border-gray-100 rounded-2xl outline-primary font-bold text-sm disabled:opacity-50"
                     disabled={!editForm.district}
                     value={editForm.subDistrict}
-                    onChange={(e) => setEditForm({...editForm, subDistrict: e.target.value})}
+                    onChange={(e) => {
+                      const nextSub = e.target.value;
+                      setEditForm({
+                        ...editForm,
+                        subDistrict: nextSub,
+                        location: nextSub ? `${nextSub}, ${editForm.district}` : ''
+                      });
+                    }}
                   >
                     <option value="">Select Area</option>
                     {availableSubDistricts.map(sd => <option key={sd} value={sd}>{sd}</option>)}
@@ -3487,7 +3587,173 @@ const SearchScreen = ({
   );
 };
 
+const getMessageDate = (timestamp: any): Date => {
+  if (!timestamp) return new Date();
+  if (typeof timestamp.toDate === 'function') {
+    return timestamp.toDate();
+  }
+  if (timestamp.seconds) {
+    return new Date(timestamp.seconds * 1000);
+  }
+  if (timestamp instanceof Date) {
+    return timestamp;
+  }
+  const d = new Date(timestamp);
+  if (!isNaN(d.getTime())) return d;
+  return new Date();
+};
+
+const formatPreciseDateTime = (timestamp: any, lang: 'en' | 'ta' = 'en'): string => {
+  const date = getMessageDate(timestamp);
+  const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+  const dDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+  const isToday = dDate.getTime() === today.getTime();
+  const isYesterday = dDate.getTime() === yesterday.getTime();
+
+  if (isToday) {
+    return lang === 'ta' ? `இன்று, ${timeStr}` : `Today, ${timeStr}`;
+  } else if (isYesterday) {
+    return lang === 'ta' ? `நேற்று, ${timeStr}` : `Yesterday, ${timeStr}`;
+  } else {
+    const options: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
+    if (date.getFullYear() !== now.getFullYear()) {
+      options.year = 'numeric';
+    }
+    const dateStr = date.toLocaleDateString(lang === 'ta' ? 'ta-IN' : 'en-US', options);
+    return `${dateStr}, ${timeStr}`;
+  }
+};
+
+const formatMessageTime = (msg: any): string => {
+  if (!msg.createdAt) {
+    return msg.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+  const date = getMessageDate(msg.createdAt);
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
+
+const getFriendlyDateBanner = (timestamp: any, lang: 'en' | 'ta' = 'en'): string => {
+  const date = getMessageDate(timestamp);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+  const dDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+  if (dDate.getTime() === today.getTime()) {
+    return lang === 'ta' ? 'இன்று' : 'Today';
+  } else if (dDate.getTime() === yesterday.getTime()) {
+    return lang === 'ta' ? 'நேற்று' : 'Yesterday';
+  } else {
+    const options: Intl.DateTimeFormatOptions = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+    return date.toLocaleDateString(lang === 'ta' ? 'ta-IN' : 'en-US', options);
+  }
+};
+
 const ChatListScreen = ({ conversations, onNavigate, onBack, language }: { conversations: Conversation[], onNavigate: any, onBack: () => void, language: 'ta' | 'en' }) => {
+  const [activeTab, setActiveTab] = useState<'active' | 'archived'>('active');
+  const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Global click-listener to close convo dropdown on any outside click
+  useEffect(() => {
+    if (!activeMenuId) return;
+    const handleGlobalClickConvo = (e: MouseEvent) => {
+      if (menuRef.current && menuRef.current.contains(e.target as Node)) {
+        return;
+      }
+      setActiveMenuId(null);
+    };
+    const timer = setTimeout(() => {
+      document.addEventListener('click', handleGlobalClickConvo);
+    }, 10);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('click', handleGlobalClickConvo);
+    };
+  }, [activeMenuId]);
+
+  const currentUserId = auth.currentUser?.uid || '';
+
+  // 1. Filter out deleted conversations
+  const filteredConvos = conversations.filter(convo => !convo.deletedUsers?.[currentUserId]);
+
+  // 2. Separate active vs archived
+  const activeConvos = filteredConvos.filter(convo => !convo.archivedUsers?.[currentUserId]);
+  const archivedConvos = filteredConvos.filter(convo => convo.archivedUsers?.[currentUserId] === true);
+
+  // 3. Selection based on activeTab
+  const tabConvos = activeTab === 'active' ? activeConvos : archivedConvos;
+
+  // 4. Sort: Important (Starred) chats float to top, then sorted by updatedAt desc
+  const sortedConvos = [...tabConvos].sort((a, b) => {
+    const aImp = a.importantUsers?.[currentUserId] || a.isPinned || false;
+    const bImp = b.importantUsers?.[currentUserId] || b.isPinned || false;
+
+    if (aImp && !bImp) return -1;
+    if (!aImp && bImp) return 1;
+
+    const aTime = getMessageDate(a.updatedAt).getTime();
+    const bTime = getMessageDate(b.updatedAt).getTime();
+    return bTime - aTime;
+  });
+
+  // Toggle Important (float to top)
+  const handleToggleImportant = async (convo: any) => {
+    if (!auth.currentUser) return;
+    const uid = auth.currentUser.uid;
+    const isImp = convo.importantUsers?.[uid] || convo.isPinned || false;
+    try {
+      await updateDoc(doc(db, 'conversations', convo.id), {
+        [`importantUsers.${uid}`]: !isImp
+      });
+      setActiveMenuId(null);
+    } catch (e) {
+      console.error("Error toggling important:", e);
+    }
+  };
+
+  // Toggle Archive
+  const handleToggleArchive = async (convo: any) => {
+    if (!auth.currentUser) return;
+    const uid = auth.currentUser.uid;
+    const isArch = convo.archivedUsers?.[uid] || false;
+    try {
+      await updateDoc(doc(db, 'conversations', convo.id), {
+        [`archivedUsers.${uid}`]: !isArch
+      });
+      setActiveMenuId(null);
+      // Automatically switch tab to take the user to relevant tab
+      if (!isArch) {
+        setActiveTab('archived');
+      } else {
+        setActiveTab('active');
+      }
+    } catch (e) {
+      console.error("Error toggling archive:", e);
+    }
+  };
+
+  // Confirm delete conversation (marks as deleted for this user)
+  const handleConfirmDelete = async (convo: any) => {
+    if (!auth.currentUser) return;
+    const uid = auth.currentUser.uid;
+    try {
+      await updateDoc(doc(db, 'conversations', convo.id), {
+        [`deletedUsers.${uid}`]: true
+      });
+      setConfirmDeleteId(null);
+      setActiveMenuId(null);
+    } catch (e) {
+      console.error("Error deleting conversation:", e);
+    }
+  };
+
   // Mark all incoming messages as delivered when the list is viewed
   useEffect(() => {
     if (!auth.currentUser) return;
@@ -3523,68 +3789,204 @@ const ChatListScreen = ({ conversations, onNavigate, onBack, language }: { conve
         </button>
         <div>
           <h1 className="text-2xl font-black tracking-tight">{language === 'ta' ? 'எனது உரையாடல்கள்' : 'My Conversations'}</h1>
-          <p className="text-xs opacity-90 font-medium">{language === 'ta' ? 'Chats & Messages' : 'எனது உரையாடல்கள்'}</p>
+          <p className="text-xs opacity-90 font-medium">{language === 'ta' ? 'அரட்டைகள் மற்றும் செய்திகள்' : 'Chats & Messages'}</p>
         </div>
       </div>
 
-      <div className="p-4 space-y-3">
-        {conversations.length === 0 ? (
+      {/* Tabs */}
+      <div className="p-4">
+        <div className="flex bg-gray-100 p-1 rounded-2xl w-full">
+          <button 
+            onClick={() => {
+              setActiveTab('active');
+              setActiveMenuId(null);
+            }}
+            className={`flex-1 py-2 px-4 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 ${
+              activeTab === 'active' 
+                ? 'bg-white text-primary shadow-sm' 
+                : 'text-gray-500 hover:text-gray-900'
+            }`}
+          >
+            <span>{language === 'ta' ? 'அரட்டைகள்' : 'Active Chats'}</span>
+            {activeConvos.length > 0 && (
+              <span className="bg-primary/10 text-primary px-2 py-0.5 rounded-full text-[10px] font-bold">
+                {activeConvos.length}
+              </span>
+            )}
+          </button>
+          <button 
+            onClick={() => {
+              setActiveTab('archived');
+              setActiveMenuId(null);
+            }}
+            className={`flex-1 py-2 px-4 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 ${
+              activeTab === 'archived' 
+                ? 'bg-white text-primary shadow-sm' 
+                : 'text-gray-500 hover:text-gray-900'
+            }`}
+          >
+            <span>{language === 'ta' ? 'காப்பகப்படுத்தப்பட்டவை' : 'Archived'}</span>
+            {archivedConvos.length > 0 && (
+              <span className="bg-gray-200 text-gray-700 px-2 py-0.5 rounded-full text-[10px] font-bold">
+                {archivedConvos.length}
+              </span>
+            )}
+          </button>
+        </div>
+      </div>
+
+      <div className="p-4 pt-0 space-y-3">
+        {sortedConvos.length === 0 ? (
           <div className="p-10 text-center space-y-4">
             <div className="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mx-auto text-gray-300">
               <MessageCircle size={40} />
             </div>
-            <p className="text-gray-500 font-bold">{language === 'ta' ? 'உரையாடல்கள் இல்லை' : 'No active chats yet!'}</p>
+            <p className="text-gray-500 font-bold">
+              {activeTab === 'archived'
+                ? (language === 'ta' ? 'காப்பகப்படுத்தப்பட்ட அரட்டைகள் இல்லை' : 'No archived chats!')
+                : (language === 'ta' ? 'உரையாடல்கள் இல்லை' : 'No active chats yet!')}
+            </p>
           </div>
         ) : (
-          conversations.map(convo => (
-            <motion.div 
-              key={convo.id}
-              whileTap={{ scale: 0.98 }}
-              onClick={() => onNavigate('ChatRoom', convo)}
-              className="bg-white p-4 rounded-[32px] border border-gray-100 shadow-sm flex items-center gap-4"
-            >
-              <div className="w-14 h-14 bg-primary/10 rounded-2xl flex items-center justify-center font-black text-primary text-xl">
-                <UserName 
-                  userId={convo.participants?.find(p => p !== auth.currentUser?.uid) || ''} 
-                  fallback={convo.participantAvatar} 
-                  type="emoji"
-                />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex justify-between items-center">
-                  <h4 className="font-black text-gray-900 truncate">
-                    {convo.participants && auth.currentUser ? (
-                      <UserName 
-                        userId={convo.participants.find(p => p !== auth.currentUser?.uid) || ''} 
-                        fallback={convo.participantName} 
-                      />
+          sortedConvos.map(convo => {
+            const isStarred = convo.importantUsers?.[currentUserId] || convo.isPinned || false;
+            return (
+              <motion.div 
+                key={convo.id}
+                whileTap={{ scale: 0.98 }}
+                onClick={() => onNavigate('ChatRoom', convo)}
+                className={`bg-white p-4 rounded-[32px] border shadow-sm flex items-center gap-4 relative ${
+                  isStarred ? 'border-amber-200 bg-amber-50/20' : 'border-gray-100'
+                }`}
+              >
+                <div className="w-14 h-14 bg-primary/10 rounded-2xl flex items-center justify-center font-black text-primary text-xl relative shrink-0">
+                  <UserName 
+                    userId={convo.participants?.find(p => p !== auth.currentUser?.uid) || ''} 
+                    fallback={convo.participantAvatar} 
+                    type="emoji"
+                  />
+                  {isStarred && (
+                    <div className="absolute -top-1 -right-1 bg-amber-400 text-white p-0.5 rounded-full shadow-sm">
+                      <Star size={10} className="fill-white text-white" />
+                    </div>
+                  )}
+                </div>
+                
+                <div className="flex-1 min-w-0">
+                  <div className="flex justify-between items-center gap-1">
+                    <h4 className="font-black text-gray-900 truncate flex items-center gap-1">
+                      {convo.participants && auth.currentUser ? (
+                        <UserName 
+                          userId={convo.participants.find(p => p !== auth.currentUser?.uid) || ''} 
+                          fallback={convo.participantName} 
+                        />
+                      ) : (
+                        convo.participantName
+                      )}
+                    </h4>
+                    <span className="text-[10px] text-gray-400 font-bold shrink-0">{formatPreciseDateTime(convo.updatedAt, language)}</span>
+                  </div>
+                  {(() => {
+                    const otherUid = convo.participants?.find(p => p !== auth.currentUser?.uid);
+                    const typingTime = convo.typing?.[otherUid || ''];
+                    const isTyping = typingTime && (Date.now() - typingTime < 5000);
+                    
+                    return isTyping ? (
+                      <p className="text-xs text-primary font-black animate-pulse flex items-center gap-1 mt-1">
+                        {language === 'ta' ? 'தட்டச்சு செய்கிறது...' : 'Typing...'}
+                      </p>
                     ) : (
-                      convo.participantName
-                    )}
-                  </h4>
-                  <span className="text-[10px] text-gray-400 font-bold">{convo.lastMessageTime}</span>
+                      <p className="text-xs text-gray-500 truncate mt-1 leading-tight">{convo.lastMessage}</p>
+                    );
+                  })()}
                 </div>
-                {(() => {
-                  const otherUid = convo.participants?.find(p => p !== auth.currentUser?.uid);
-                  const typingTime = convo.typing?.[otherUid || ''];
-                  const isTyping = typingTime && (Date.now() - typingTime < 5000);
-                  
-                  return isTyping ? (
-                    <p className="text-xs text-primary font-black animate-pulse flex items-center gap-1 mt-1">
-                      {language === 'ta' ? 'தட்டச்சு செய்கிறது...' : 'Typing...'}
-                    </p>
-                  ) : (
-                    <p className="text-xs text-gray-500 truncate mt-1 leading-tight">{convo.lastMessage}</p>
-                  );
-                })()}
-              </div>
-              {convo.unreadCount > 0 && convo.lastMessageSenderId !== auth.currentUser?.uid && (
-                <div className="w-5 h-5 bg-primary text-white text-[10px] font-black rounded-full flex items-center justify-center">
-                  {convo.unreadCount}
+
+                {convo.unreadCount > 0 && convo.lastMessageSenderId !== auth.currentUser?.uid && (
+                  <div className="w-5 h-5 bg-primary text-white text-[10px] font-black rounded-full flex items-center justify-center shrink-0">
+                    {convo.unreadCount}
+                  </div>
+                )}
+
+                {/* Dropdown Options dots */}
+                <div className="relative z-20 shrink-0" onClick={(e) => e.stopPropagation()}>
+                  <button 
+                    onClick={() => {
+                      setConfirmDeleteId(null);
+                      setActiveMenuId(activeMenuId === convo.id ? null : convo.id);
+                    }}
+                    className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors"
+                  >
+                    <MoreVertical size={18} />
+                  </button>
+                  {activeMenuId === convo.id && (
+                    <div ref={menuRef} className="absolute right-0 mt-2 w-48 bg-white border border-gray-100 rounded-2xl shadow-xl z-50 p-2 text-sm font-bold text-gray-700">
+                      {confirmDeleteId === convo.id ? (
+                          <div className="p-2 space-y-2 text-center">
+                            <p className="text-xs text-red-600 font-bold">
+                              {language === 'ta' ? 'இந்த அரட்டையை அழிக்கவா?' : 'Delete this chat?'}
+                            </p>
+                            <div className="flex gap-2 justify-center">
+                              <button 
+                                onClick={() => handleConfirmDelete(convo)}
+                                className="bg-red-500 text-white px-3 py-1.5 rounded-xl text-xs hover:bg-red-600 transition-colors"
+                              >
+                                {language === 'ta' ? 'ஆம்' : 'Yes'}
+                              </button>
+                              <button 
+                                onClick={() => {
+                                  setConfirmDeleteId(null);
+                                  setActiveMenuId(null);
+                                }}
+                                className="bg-gray-100 text-gray-700 px-3 py-1.5 rounded-xl text-xs hover:bg-gray-200 transition-colors"
+                              >
+                                {language === 'ta' ? 'இல்லை' : 'No'}
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="space-y-0.5">
+                            {/* Star / Important toggle option */}
+                            <button 
+                              onClick={() => handleToggleImportant(convo)}
+                              className="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-gray-50 text-left transition-colors"
+                            >
+                              <Star size={16} className={isStarred ? "fill-amber-400 text-amber-500" : "text-gray-400"} />
+                              <span>
+                                {isStarred 
+                                  ? (language === 'ta' ? 'முக்கியமற்றதாக்கு' : 'Unmark Important') 
+                                  : (language === 'ta' ? 'முக்கியமானதாக்கு' : 'Mark as Important')}
+                              </span>
+                            </button>
+
+                            {/* Archive toggle option */}
+                            <button 
+                              onClick={() => handleToggleArchive(convo)}
+                              className="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-gray-50 text-left transition-colors"
+                            >
+                              <Archive size={16} className="text-gray-400" />
+                              <span>
+                                {activeTab === 'archived'
+                                  ? (language === 'ta' ? 'மீட்டமை' : 'Unarchive')
+                                  : (language === 'ta' ? 'காப்பகப்படுத்து' : 'Archive')}
+                              </span>
+                            </button>
+
+                            {/* Delete option trigger */}
+                            <button 
+                              onClick={() => setConfirmDeleteId(convo.id)}
+                              className="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-red-50 text-red-600 text-left transition-colors border-t border-gray-100/60 mt-0.5"
+                            >
+                              <Trash size={16} />
+                              <span>{language === 'ta' ? 'அழிக்கவும்' : 'Delete Chat'}</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                  )}
                 </div>
-              )}
-            </motion.div>
-          ))
+              </motion.div>
+            );
+          })
         )}
       </div>
     </div>
@@ -3600,14 +4002,144 @@ const ChatRoomScreen = ({ conversation, onSendMessage, onBack, language }: {
   const [inputText, setInputText] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [otherUserTyping, setOtherUserTyping] = useState(false);
+  const [otherUserStatus, setOtherUserStatus] = useState<{ isOnline?: boolean, lastActive?: any } | null>(null);
+  const [activeMessageMenuId, setActiveMessageMenuId] = useState<string | null>(null);
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
+  const [confirmHeaderDelete, setConfirmHeaderDelete] = useState(false);
+  
   const scrollRef = useRef<HTMLDivElement>(null);
   const skipNextTypingUpdate = useRef(false);
+  const isUserTyping = useRef(false);
+  
+  const headerMenuRef = useRef<HTMLDivElement>(null);
+  const messageMenuRef = useRef<HTMLDivElement>(null);
+
+  // Clear typing status on unmount
+  useEffect(() => {
+    return () => {
+      if (conversation.id && auth.currentUser) {
+        const convoDocRef = doc(db, 'conversations', conversation.id);
+        updateDoc(convoDocRef, {
+          [`typing.${auth.currentUser.uid}`]: null
+        }).catch((e) => console.warn("Could not clear typing status on unmount", e));
+      }
+    };
+  }, [conversation.id]);
+
+  // Global click-listener to close message dropdown on any outside click
+  useEffect(() => {
+    if (!activeMessageMenuId) return;
+    const handleGlobalClickMessage = (e: MouseEvent) => {
+      if (messageMenuRef.current && messageMenuRef.current.contains(e.target as Node)) {
+        return;
+      }
+      setActiveMessageMenuId(null);
+    };
+    const timer = setTimeout(() => {
+      document.addEventListener('click', handleGlobalClickMessage);
+    }, 10);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('click', handleGlobalClickMessage);
+    };
+  }, [activeMessageMenuId]);
+
+  // Global click-listener to close header dropdown on any outside click In Chat Room
+  useEffect(() => {
+    if (!headerMenuOpen) return;
+    const handleGlobalClickHeader = (e: MouseEvent) => {
+      if (headerMenuRef.current && headerMenuRef.current.contains(e.target as Node)) {
+        return;
+      }
+      setHeaderMenuOpen(false);
+    };
+    const timer = setTimeout(() => {
+      document.addEventListener('click', handleGlobalClickHeader);
+    }, 10);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('click', handleGlobalClickHeader);
+    };
+  }, [headerMenuOpen]);
 
   useEffect(() => {
     if (conversation.initialMessage) {
       setInputText(conversation.initialMessage);
     }
   }, [conversation.initialMessage]);
+
+  // Real-time listener for the other user's online and active status
+  useEffect(() => {
+    const otherParticipantId = conversation.participants?.find(p => p !== auth.currentUser?.uid);
+    if (!otherParticipantId) return;
+
+    const unsubscribeStatus = onSnapshot(doc(db, 'users', otherParticipantId), (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        setOtherUserStatus({
+          isOnline: data.isOnline,
+          lastActive: data.lastActive
+        });
+      }
+    }, (err) => {
+      console.warn("Could not load other user status:", err);
+    });
+
+    return () => unsubscribeStatus();
+  }, [conversation.id, conversation.participants]);
+
+  // Determine if the user is currently online (heartbeat within 60 seconds)
+  const isOnline = useMemo(() => {
+    if (!otherUserStatus) return false;
+    if (otherUserStatus.isOnline !== true) return false;
+    if (!otherUserStatus.lastActive) return false;
+    
+    let lastActiveMs = 0;
+    const la = otherUserStatus.lastActive;
+    if (la.toDate) {
+      lastActiveMs = la.toDate().getTime();
+    } else if (la.seconds) {
+      lastActiveMs = la.seconds * 1000;
+    } else {
+      lastActiveMs = Number(la);
+    }
+    
+    if (isNaN(lastActiveMs)) return false;
+    
+    // Deem active if the last active timestamp is less than 60 seconds old
+    return (Date.now() - lastActiveMs) < 60000;
+  }, [otherUserStatus]);
+
+  // Helper function to format the last active timestamp precisely
+  const formatLastSeen = (timestamp: any, lang: 'en' | 'ta' = 'en'): string => {
+    if (!timestamp) return lang === 'ta' ? 'ஆஃப்லைனில்' : 'Offline';
+    const date = getMessageDate(timestamp);
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+    const dDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    if (dDate.getTime() === today.getTime()) {
+      return lang === 'ta' ? `இன்று, ${timeStr}` : `Active today at ${timeStr}`;
+    } else if (dDate.getTime() === yesterday.getTime()) {
+      return lang === 'ta' ? `நேற்று, ${timeStr}` : `Active yesterday at ${timeStr}`;
+    } else {
+      const options: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
+      if (date.getFullYear() !== now.getFullYear()) {
+        options.year = 'numeric';
+      }
+      const dateStr = date.toLocaleDateString(lang === 'ta' ? 'ta-IN' : 'en-US', options);
+      return lang === 'ta' ? `${dateStr}, ${timeStr}` : `last active ${dateStr} at ${timeStr}`;
+    }
+  };
+
+  // Filter out messages that have been deleted or archived by the current user
+  const visibleMessages = useMemo(() => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return messages;
+    return messages.filter(msg => !msg.deletedForUsers?.[uid] && !msg.archivedForUsers?.[uid]);
+  }, [messages]);
 
   // Read Receipts & Messages Subscription
   useEffect(() => {
@@ -3665,38 +4197,17 @@ const ChatRoomScreen = ({ conversation, onSendMessage, onBack, language }: {
     return () => unsubscribe();
   }, [conversation.id]);
 
-  // Typing Indicator Logic
-  useEffect(() => {
-    if (!conversation.id || !auth.currentUser) return;
-
-    const convoRef = doc(db, 'conversations', conversation.id);
-    const unsubscribe = onSnapshot(convoRef, (snapshot) => {
-      const data = snapshot.data();
-      if (data?.typing) {
-        const otherParticipantId = conversation.participants.find(p => p !== auth.currentUser?.uid);
-        if (otherParticipantId && data.typing[otherParticipantId]) {
-          const typingTime = data.typing[otherParticipantId];
-          const isRecentlyTyping = Date.now() - typingTime < 5000;
-          setOtherUserTyping(isRecentlyTyping);
-        } else {
-          setOtherUserTyping(false);
-        }
-      }
-    });
-
-    return () => unsubscribe();
-  }, [conversation.id]);
-
-  // Set typing status
+  // Send typing trigger only if input has content and was typed by user
   useEffect(() => {
     if (!conversation.id || !auth.currentUser || skipNextTypingUpdate.current) {
       skipNextTypingUpdate.current = false;
       return;
     }
 
+    if (!isUserTyping.current) return;
+
     const setTyping = async (isTyping: boolean) => {
       try {
-        const otherParticipantId = conversation.participants.find(p => p !== auth.currentUser?.uid);
         await updateDoc(doc(db, 'conversations', conversation.id!), {
           [`typing.${auth.currentUser?.uid}`]: isTyping ? Date.now() : null
         });
@@ -3718,9 +4229,65 @@ const ChatRoomScreen = ({ conversation, onSendMessage, onBack, language }: {
     if (inputText.trim()) {
       onSendMessage(inputText);
       skipNextTypingUpdate.current = true;
+      isUserTyping.current = false;
       setInputText('');
+      // Explicitly clear typing status upon sending
+      try {
+        const convoDocRef = doc(db, 'conversations', conversation.id);
+        updateDoc(convoDocRef, {
+          [`typing.${auth.currentUser?.uid}`]: null
+        }).catch((e) => console.warn("Could not clear typing on send", e));
+      } catch (e) {
+        console.warn(e);
+      }
     }
   };
+
+  const handleToggleMessageArchive = async (msgId: string) => {
+    if (!conversation.id || !auth.currentUser) return;
+    try {
+      const msgRef = doc(db, 'conversations', conversation.id, 'messages', msgId);
+      await updateDoc(msgRef, {
+        [`archivedForUsers.${auth.currentUser.uid}`]: true
+      });
+    } catch (e) {
+      console.error("Error archiving message:", e);
+    }
+  };
+
+  const handleDeleteMessage = async (msgId: string) => {
+    if (!conversation.id || !auth.currentUser) return;
+    try {
+      const msgRef = doc(db, 'conversations', conversation.id, 'messages', msgId);
+      await updateDoc(msgRef, {
+        [`deletedForUsers.${auth.currentUser.uid}`]: true
+      });
+    } catch (e) {
+      console.error("Error deleting message:", e);
+    }
+  };
+
+  // Typing Indicator Logic
+  useEffect(() => {
+    if (!conversation.id || !auth.currentUser) return;
+
+    const convoRef = doc(db, 'conversations', conversation.id);
+    const unsubscribe = onSnapshot(convoRef, (snapshot) => {
+      const data = snapshot.data();
+      if (data?.typing) {
+        const otherParticipantId = conversation.participants.find(p => p !== auth.currentUser?.uid);
+        if (otherParticipantId && data.typing[otherParticipantId]) {
+          const typingTime = data.typing[otherParticipantId];
+          const isRecentlyTyping = Date.now() - typingTime < 5000;
+          setOtherUserTyping(isRecentlyTyping);
+        } else {
+          setOtherUserTyping(false);
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, [conversation.id]);
 
   return (
     <div className="bg-white min-h-screen flex flex-col">
@@ -3766,7 +4333,7 @@ const ChatRoomScreen = ({ conversation, onSendMessage, onBack, language }: {
                   </span>
                   {language === 'ta' ? 'தட்டச்சு செய்கிறது...' : 'typing...'}
                 </motion.p>
-              ) : (
+              ) : isOnline ? (
                 <motion.p 
                   key="online"
                   initial={{ opacity: 0, y: 5 }}
@@ -3776,63 +4343,226 @@ const ChatRoomScreen = ({ conversation, onSendMessage, onBack, language }: {
                 >
                   {language === 'ta' ? 'ஆன்லைனில்' : 'Online'}
                 </motion.p>
+              ) : (
+                <motion.p 
+                  key="offline"
+                  initial={{ opacity: 0, y: 5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -5 }}
+                  className="text-[9px] text-gray-400 font-medium mt-1 uppercase tracking-wider"
+                >
+                  {formatLastSeen(otherUserStatus?.lastActive, language)}
+                </motion.p>
               )}
             </AnimatePresence>
           </div>
         </div>
+
+        {/* Top-right menu inside Chat Room */}
+        <div className="ml-auto relative" ref={headerMenuRef}>
+          <button 
+            onClick={(e) => {
+              e.stopPropagation();
+              setHeaderMenuOpen(!headerMenuOpen);
+              setConfirmHeaderDelete(false);
+            }} 
+            className="p-2 rounded-full hover:bg-gray-150 transition-colors text-gray-400 hover:text-gray-700"
+          >
+            <MoreVertical size={20} />
+          </button>
+          
+          {headerMenuOpen && (
+            <div className="absolute right-0 mt-2 w-48 bg-white border border-gray-150 rounded-2xl shadow-xl z-50 p-2 text-sm font-bold text-gray-700">
+              {confirmHeaderDelete ? (
+                <div className="p-2 space-y-2 text-center">
+                  <p className="text-xs text-red-600 font-bold">
+                    {language === 'ta' ? 'இந்த அரட்டையை அழிக்கவா?' : 'Delete this chat?'}
+                  </p>
+                  <div className="flex gap-2 justify-center">
+                    <button 
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        if (!auth.currentUser) return;
+                        const uid = auth.currentUser.uid;
+                        try {
+                          await updateDoc(doc(db, 'conversations', conversation.id), {
+                            [`deletedUsers.${uid}`]: true
+                          });
+                          setHeaderMenuOpen(false);
+                          onBack();
+                        } catch (err) {
+                          console.error("Error deleting conversation in room:", err);
+                        }
+                      }}
+                      className="bg-red-500 text-white px-3 py-1.5 rounded-xl text-xs hover:bg-red-600 transition-colors font-bold"
+                    >
+                      {language === 'ta' ? 'ஆம்' : 'Yes'}
+                    </button>
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmHeaderDelete(false);
+                      }}
+                      className="bg-gray-100 text-gray-700 px-3 py-1.5 rounded-xl text-xs hover:bg-gray-200 transition-colors font-bold"
+                    >
+                      {language === 'ta' ? 'இல்லை' : 'No'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-0.5">
+                  {/* Place Star / Important toggle option */}
+                  <button 
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      if (!auth.currentUser) return;
+                      const uid = auth.currentUser.uid;
+                      const isImp = conversation.importantUsers?.[uid] || conversation.isPinned || false;
+                      try {
+                        await updateDoc(doc(db, 'conversations', conversation.id), {
+                          [`importantUsers.${uid}`]: !isImp
+                        });
+                        setHeaderMenuOpen(false);
+                      } catch (err) {
+                        console.error("Error toggling important in room:", err);
+                      }
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-gray-50 text-left transition-colors"
+                  >
+                    <Star size={16} className={(conversation.importantUsers?.[auth.currentUser?.uid || ''] || conversation.isPinned) ? "fill-amber-400 text-amber-500" : "text-gray-400"} />
+                    <span>
+                      {(conversation.importantUsers?.[auth.currentUser?.uid || ''] || conversation.isPinned)
+                        ? (language === 'ta' ? 'முக்கியமற்றதாக்கு' : 'Unmark Important')
+                        : (language === 'ta' ? 'முக்கியமானதாக்கு' : 'Mark as Important')}
+                    </span>
+                  </button>
+
+                  {/* Delete option inside Room */}
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setConfirmHeaderDelete(true);
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-red-50 text-red-600 text-left transition-colors border-t border-gray-100/60 mt-0.5"
+                  >
+                    <Trash size={16} />
+                    <span>{language === 'ta' ? 'அழிக்கவும்' : 'Delete Chat'}</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
-      <div className="flex-1 p-4 space-y-6 overflow-y-auto pb-24 scroll-smooth" ref={scrollRef}>
-        <div className="text-center py-4">
-          <span className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] bg-gray-50 px-3 py-1 rounded-full border border-gray-100">
-            {language === 'ta' ? 'இன்று' : 'Today'}
-          </span>
-        </div>
+      <div className="flex-1 p-4 space-y-4 overflow-y-auto pb-24 scroll-smooth" ref={scrollRef}>
+        {visibleMessages.length === 0 ? (
+          <div className="p-10 text-center text-gray-400 text-xs font-bold font-sans">
+            {language === 'ta' ? 'செய்திகள் எதுவும் இல்லை' : 'No messages here yet.'}
+          </div>
+        ) : (
+          visibleMessages.map((msg, idx) => {
+            const isOwn = msg.senderId === auth.currentUser?.uid;
+            
+            // Determine if we need to show a date header
+            const msgDate = getMessageDate(msg.createdAt);
+            const prevMsg = idx > 0 ? visibleMessages[idx - 1] : null;
+            const prevMsgDate = prevMsg ? getMessageDate(prevMsg.createdAt) : null;
+            
+            const showDateHeader = !prevMsgDate || 
+              msgDate.getFullYear() !== prevMsgDate.getFullYear() ||
+              msgDate.getMonth() !== prevMsgDate.getMonth() ||
+              msgDate.getDate() !== prevMsgDate.getDate();
 
-        {messages.map((msg, idx) => {
-          const isOwn = msg.senderId === auth.currentUser?.uid;
-          const showAvatar = idx === 0 || messages[idx-1].senderId !== msg.senderId;
-          
-          return (
-            <motion.div 
-              key={msg.id} 
-              initial={{ opacity: 0, scale: 0.9, y: 10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              transition={{ duration: 0.2, delay: idx * 0.05 }}
-              className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}
-            >
-              <div className={`max-w-[80%] space-y-1`}>
-                <div className={`relative px-4 py-3 text-sm font-bold shadow-sm transition-all hover:shadow-md ${
-                  isOwn 
-                    ? 'bg-primary text-white rounded-[24px] rounded-br-none' 
-                    : 'bg-gray-100 text-gray-800 rounded-[24px] rounded-bl-none border border-gray-200'
-                }`}>
-                  {msg.text}
-                  <div className={`text-[10px] mt-1 opacity-70 flex items-center gap-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                    {msg.timestamp || 'Just now'}
-                    {isOwn && (
-                      <span className="flex">
-                        {msg.isRead ? (
-                          <>
-                            <Check size={12} className="text-sky-300" />
-                            <Check size={12} className="-ml-1.5 text-sky-300" />
-                          </>
-                        ) : msg.isDelivered ? (
-                          <>
-                            <Check size={12} className="text-white/70" />
-                            <Check size={12} className="-ml-1.5 text-white/70" />
-                          </>
-                        ) : (
-                          <Check size={12} className="text-white/50" />
+            return (
+              <div key={msg.id} className="space-y-4">
+                {showDateHeader && (
+                  <div className="text-center py-4">
+                    <span className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] bg-gray-50 px-3 py-1 rounded-full border border-gray-100">
+                      {getFriendlyDateBanner(msg.createdAt, language)}
+                    </span>
+                  </div>
+                )}
+                
+                <div className={`flex items-end gap-2 relative group ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
+                  <motion.div 
+                    initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="max-w-[75%] space-y-1 font-sans"
+                  >
+                    <div className={`relative px-4 py-3 text-sm font-bold shadow-sm transition-all hover:shadow-md ${
+                      isOwn 
+                        ? 'bg-primary text-white rounded-[24px] rounded-br-none' 
+                        : 'bg-gray-100 text-gray-800 rounded-[24px] rounded-bl-none border border-gray-200'
+                    }`}>
+                      {msg.text}
+                      <div className={`text-[10px] mt-1 opacity-70 flex items-center gap-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                        {formatMessageTime(msg)}
+                        {isOwn && (
+                          <span className="flex">
+                            {msg.isRead ? (
+                              <>
+                                <Check size={12} className="text-sky-300" />
+                                <Check size={12} className="-ml-1.5 text-sky-300" />
+                              </>
+                            ) : msg.isDelivered ? (
+                              <>
+                                <Check size={12} className="text-white/70" />
+                                <Check size={12} className="-ml-1.5 text-white/70" />
+                              </>
+                            ) : (
+                              <Check size={12} className="text-white/50" />
+                            )}
+                          </span>
                         )}
-                      </span>
+                      </div>
+                    </div>
+                  </motion.div>
+
+                  {/* Message Dots Actions */}
+                  <div className="relative shrink-0 self-center">
+                    <button 
+                      onClick={() => setActiveMessageMenuId(activeMessageMenuId === msg.id ? null : msg.id)}
+                      className="p-1.5 text-gray-300 hover:text-gray-600 rounded-full hover:bg-gray-100 transition-colors opacity-40 group-hover:opacity-100"
+                    >
+                      <MoreHorizontal size={14} />
+                    </button>
+                    {activeMessageMenuId === msg.id && (
+                      <>
+                        <div className="fixed inset-0 z-40" onClick={() => setActiveMessageMenuId(null)} />
+                        <div ref={messageMenuRef} className={`absolute ${isOwn ? 'right-0' : 'left-0'} mt-1 w-32 bg-white border border-gray-100 rounded-xl shadow-xl z-50 p-1 text-xs font-bold text-gray-700`}>
+                          {/* Archive option */}
+                          <button 
+                            onClick={() => {
+                              handleToggleMessageArchive(msg.id);
+                              setActiveMessageMenuId(null);
+                            }}
+                            className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-lg hover:bg-gray-50 text-left transition-colors"
+                          >
+                            <Archive size={12} className="text-gray-400" />
+                            <span>{language === 'ta' ? 'காப்பகம்' : 'Archive'}</span>
+                          </button>
+                          {/* Delete option */}
+                          <button 
+                            onClick={() => {
+                              handleDeleteMessage(msg.id);
+                              setActiveMessageMenuId(null);
+                            }}
+                            className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-lg hover:bg-red-50 text-red-600 text-left transition-colors border-t border-gray-50/60 mt-0.5"
+                          >
+                            <Trash size={12} />
+                            <span>{language === 'ta' ? 'அழி' : 'Delete'}</span>
+                          </button>
+                        </div>
+                      </>
                     )}
                   </div>
                 </div>
               </div>
-            </motion.div>
-          );
-        })}
+            );
+          })
+        )}
       </div>
 
       <div className="p-4 border-t border-gray-100 bg-white/100 backdrop-blur-xl sticky bottom-0 z-50">
@@ -3842,7 +4572,10 @@ const ChatRoomScreen = ({ conversation, onSendMessage, onBack, language }: {
             placeholder={language === 'ta' ? 'செய்தி...' : 'Type a message...'}
             className="flex-1 bg-transparent px-4 py-2 outline-none text-sm font-bold placeholder:text-gray-400"
             value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
+            onChange={(e) => {
+              isUserTyping.current = true;
+              setInputText(e.target.value);
+            }}
             onKeyPress={(e) => e.key === 'Enter' && send()}
           />
           <button 

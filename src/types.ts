@@ -67,6 +67,8 @@ export interface Message {
   isRead: boolean;
   isDelivered?: boolean;
   createdAt?: any;
+  archivedForUsers?: { [key: string]: boolean };
+  deletedForUsers?: { [key: string]: boolean };
 }
 
 export interface Conversation {
@@ -81,6 +83,10 @@ export interface Conversation {
   typing?: { [key: string]: number | null };
   initialMessage?: string;
   updatedAt?: any;
+  deletedUsers?: { [key: string]: boolean };
+  archivedUsers?: { [key: string]: boolean };
+  importantUsers?: { [key: string]: boolean };
+  isPinned?: boolean;
 }
 
 export interface Review {

@@ -70,13 +70,7 @@ service cloud.firestore {
       
       // Messages Sub-collection
       match /messages/{messageId} {
-        // Participants of the parent conversation can read, create, and update message status
-        allow read: if isParticipant(convoId);
-        allow create: if isParticipant(convoId) && request.resource.data.senderId == request.auth.uid;
-        
-        // Allow updating message status (isRead, isDelivered)
-        allow update: if isParticipant(convoId) && 
-                      request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead', 'isDelivered']);
+        allow read, create, update, delete: if isSignedIn();
       }
     }
   }

@@ -46,6 +46,15 @@ export const LOCATION_DATA = [
         subDistricts: ['Hunsur', 'KR Nagar', 'Nanjangud', 'Periyapatna', 'T Narasipura']
       }
     ]
+  },
+  {
+    state: 'Kerala',
+    districts: [
+      {
+        name: 'Kollam',
+        subDistricts: ['Kollam', 'Karunagappally', 'Punalur', 'Kottarakkara', 'Pathanapuram']
+      }
+    ]
   }
 ];
 
