@@ -124,7 +124,7 @@ const App = () => {
   const [user, setUser] = useState<any>(null);
   const [viewingUserId, setViewingUserId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeSubDistrict, setActiveSubDistrict] = useState<string | null>(null);
+  const [activeSubDistrict, setActiveSubDistrict] = useState<string | null>(() => localStorage.getItem('selectedLocation'));
   const [activeCategory, setActiveCategory] = useState<Category | null>(null);
   const [loading, setLoading] = useState(true);
   const [pendingRole, setPendingRole] = useState<'buy' | 'sell' | null>(() => {
@@ -1087,16 +1087,57 @@ const HomeScreen = ({
   toggleWishlist
 }: any) => {
   
+  const [showLocationModal, setShowLocationModal] = useState(false);
+  const [customLocationInput, setCustomLocationInput] = useState('');
+
+  // Persist selected location to localStorage whenever it changes
+  useEffect(() => {
+    if (activeSubDistrict) {
+      localStorage.setItem('selectedLocation', activeSubDistrict);
+    } else {
+      localStorage.removeItem('selectedLocation');
+    }
+  }, [activeSubDistrict]);
+
   const subDistricts = useMemo(() => {
+    let selectedLoc = activeSubDistrict || user?.subDistrict || user?.location || user?.district || user?.state || '';
+    if (selectedLoc.includes(',')) {
+      selectedLoc = selectedLoc.split(',')[0].trim();
+    }
+
     const userState = user?.state || 'Tamil Nadu';
     const userDistrict = user?.district || (userState === 'Karnataka' ? 'Bangalore' : 'Erode');
     const stateData = LOCATION_DATA.find(s => s.state === userState);
+    
+    let baseList = ['Gobichettipalayam', 'Erode', 'Bhavani', 'Coimbatore', 'Salem'];
     if (stateData) {
       const districtData = stateData.districts.find(d => d.name === userDistrict);
-      if (districtData) return districtData.subDistricts;
+      if (districtData) {
+        baseList = [...districtData.subDistricts];
+      }
     }
-    return ['Gobichettipalayam', 'Erode', 'Bhavani', 'Coimbatore', 'Salem']; // Fallback
-  }, [user?.state, user?.district]);
+
+    let list = [...baseList];
+    if (selectedLoc) {
+      const normalizedSel = selectedLoc.trim();
+      if (normalizedSel) {
+        // Find if an existing item matches (case insensitive check)
+        const existingIdx = list.findIndex(item => item.toLowerCase() === normalizedSel.toLowerCase());
+        if (existingIdx > -1) {
+          // Remove the existing item
+          const [matched] = list.splice(existingIdx, 1);
+          // Insert at the beginning of the list
+          list.unshift(matched);
+        } else {
+          // Prepend the new selected location
+          list.unshift(normalizedSel);
+        }
+      }
+    }
+
+    // Keep unique values, preserving order
+    return Array.from(new Set(list));
+  }, [user?.state, user?.district, user?.subDistrict, user?.location, user?.district, user?.state, activeSubDistrict]);
 
   // Synchronize activeSubDistrict if user profile changes and it wasn't set
   useEffect(() => {
@@ -1138,7 +1179,7 @@ const HomeScreen = ({
           <span className="text-gray-400">{language === 'ta' ? 'பயிர்கள், கருவிகள் தேடுக...' : 'Search crops, equipment, seeds...'}</span>
         </div>
 
-        <div className="flex overflow-x-auto no-scrollbar gap-2 py-1">
+        <div className="flex overflow-x-auto no-scrollbar gap-2 py-1 items-center">
           <button 
             onClick={() => setActiveSubDistrict(null)}
             className={`shrink-0 px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${activeSubDistrict === null ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'bg-gray-50 text-gray-400 border border-gray-100'}`}
@@ -1154,6 +1195,13 @@ const HomeScreen = ({
               {sd}
             </button>
           ))}
+          <button 
+            onClick={() => setShowLocationModal(true)}
+            className="shrink-0 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all bg-emerald-50 text-emerald-600 border border-emerald-100 hover:bg-emerald-100 flex items-center gap-1 active:scale-95"
+          >
+            <MapPin size={10} />
+            {language === 'ta' ? 'இடம் திருத்து' : 'Edit Location'}
+          </button>
         </div>
       </div>
 
@@ -1296,6 +1344,95 @@ const HomeScreen = ({
           </div>
         )}
       </div>
+
+      {showLocationModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-55 flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-white rounded-[32px] p-6 max-w-sm w-full shadow-2xl border border-gray-100 flex flex-col gap-4 text-left"
+          >
+            <div className="flex justify-between items-center">
+              <h3 className="font-black text-gray-900 text-sm uppercase tracking-wider">
+                {language === 'ta' ? 'இடத்தைத் தேர்ந்தெடுக்கவும்' : 'Select Location'}
+              </h3>
+              <button 
+                onClick={() => setShowLocationModal(false)}
+                className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-400 hover:text-gray-600 transition-colors font-black text-xs"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">
+              {language === 'ta' ? 'உதாரணங்கள் / அடிக்கடி தேர்ந்தெடுப்பவை:' : 'Examples / Presets:'}
+            </p>
+
+            <div className="flex flex-col gap-2">
+              {[
+                { name: 'Andhra Pradesh', labelTa: 'ஆந்திரா பிரதேசம்' },
+                { name: 'Gopichetti Palayam', labelTa: 'கோபிசெட்டிபாளையம்' },
+                { name: 'Perundurai', labelTa: 'பெருந்துறை' }
+              ].map(preset => (
+                <button
+                  key={preset.name}
+                  onClick={() => {
+                    const finalName = preset.name;
+                    setActiveSubDistrict(finalName);
+                    if (user?.uid) {
+                      const userRef = doc(db, 'users', user.uid);
+                      updateDoc(userRef, { subDistrict: finalName, location: finalName }).catch(() => {});
+                    }
+                    setShowLocationModal(false);
+                  }}
+                  className={`flex justify-between items-center p-3 rounded-2xl border transition-all text-xs font-black uppercase tracking-wider ${
+                    (activeSubDistrict && activeSubDistrict.toLowerCase() === preset.name.toLowerCase())
+                      ? 'bg-primary/10 border-primary text-primary font-black' 
+                      : 'bg-gray-50 border-gray-100 hover:bg-gray-100 text-gray-700 font-black'
+                  }`}
+                >
+                  <span>{language === 'ta' ? preset.labelTa : preset.name}</span>
+                  <MapPin size={12} className={(activeSubDistrict && activeSubDistrict.toLowerCase() === preset.name.toLowerCase()) ? 'text-primary' : 'text-gray-400'} />
+                </button>
+              ))}
+            </div>
+
+            <div className="border-t border-gray-100 my-1"></div>
+
+            <div>
+              <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mb-2">
+                {language === 'ta' ? 'வேறு இடம் உள்ளிடவும்:' : 'Or enter other location:'}
+              </p>
+              <div className="flex gap-2">
+                <input 
+                  type="text"
+                  placeholder={language === 'ta' ? 'எ-கா: ஈரோடு' : 'e.g. Erode'}
+                  value={customLocationInput}
+                  onChange={(e) => setCustomLocationInput(e.target.value)}
+                  className="flex-1 bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-xs font-black outline-none focus:border-primary transition-all text-gray-800"
+                />
+                <button
+                  onClick={() => {
+                    if (customLocationInput.trim()) {
+                      const finalName = customLocationInput.trim();
+                      setActiveSubDistrict(finalName);
+                      if (user?.uid) {
+                        const userRef = doc(db, 'users', user.uid);
+                        updateDoc(userRef, { subDistrict: finalName, location: finalName }).catch(() => {});
+                      }
+                      setShowLocationModal(false);
+                      setCustomLocationInput('');
+                    }
+                  }}
+                  className="bg-primary text-white font-black text-xs uppercase tracking-wider px-4 py-3 rounded-2xl active:scale-95 transition-transform shrink-0"
+                >
+                  {language === 'ta' ? 'அமை' : 'Set'}
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 };
@@ -3177,15 +3314,44 @@ const SearchScreen = ({
   const [localQuery, setLocalQuery] = useState(query || '');
 
   const subDistricts = useMemo(() => {
+    let selectedLoc = activeSubDistrict || user?.subDistrict || user?.location || user?.district || user?.state || '';
+    if (selectedLoc.includes(',')) {
+      selectedLoc = selectedLoc.split(',')[0].trim();
+    }
+
     const userState = user?.state || 'Tamil Nadu';
     const userDistrict = user?.district || (userState === 'Karnataka' ? 'Bangalore' : 'Erode');
     const stateData = LOCATION_DATA.find(s => s.state === userState);
+    
+    let baseList = ['Gobichettipalayam', 'Erode', 'Bhavani', 'Coimbatore', 'Salem'];
     if (stateData) {
       const districtData = stateData.districts.find(d => d.name === userDistrict);
-      if (districtData) return districtData.subDistricts;
+      if (districtData) {
+        baseList = [...districtData.subDistricts];
+      }
     }
-    return ['Gobichettipalayam', 'Erode', 'Bhavani', 'Coimbatore', 'Salem']; // Fallback
-  }, [user?.state, user?.district]);
+
+    let list = [...baseList];
+    if (selectedLoc) {
+      const normalizedSel = selectedLoc.trim();
+      if (normalizedSel) {
+        // Find if an existing item matches (case insensitive check)
+        const existingIdx = list.findIndex(item => item.toLowerCase() === normalizedSel.toLowerCase());
+        if (existingIdx > -1) {
+          // Remove the existing item
+          const [matched] = list.splice(existingIdx, 1);
+          // Insert at the beginning of the list
+          list.unshift(matched);
+        } else {
+          // Prepend the new selected location
+          list.unshift(normalizedSel);
+        }
+      }
+    }
+
+    // Keep unique values, preserving order
+    return Array.from(new Set(list));
+  }, [user?.state, user?.district, user?.subDistrict, user?.location, user?.district, user?.state, activeSubDistrict]);
 
   const results = listings.filter((l: any) => {
       const q = localQuery.toLowerCase();
