@@ -53,7 +53,9 @@ import {
   Play,
   Pause,
   Volume2,
-  Square
+  Square,
+  Download,
+  Smartphone
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { onAuthStateChanged, signOut, GoogleAuthProvider, signInWithPopup, signInAnonymously, updateProfile, RecaptchaVerifier, signInWithPhoneNumber, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
@@ -150,6 +152,50 @@ const App = () => {
   const notificationTimeoutRef = useRef<any>(null);
   const lastProfileSubDistrictRef = useRef<string | null>(null);
   const lastConversationsStateRef = useRef<Map<string, { lastMessage: string, unreadCount: number, isTyping: boolean }>>(new Map());
+
+  // PWA Mobile Installation state
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [pwaInstallable, setPwaInstallable] = useState(false);
+  const [pwaInstalled, setPwaInstalled] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return window.matchMedia('(display-mode: standalone)').matches || (window.navigator as any).standalone === true;
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setPwaInstallable(true);
+    };
+
+    const handleAppInstalled = () => {
+      setPwaInstalled(true);
+      setPwaInstallable(false);
+      setDeferredPrompt(null);
+      console.log('AgriMarket PWA installed successfully!');
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
+  }, []);
+
+  const triggerPwaInstall = async () => {
+    if (!deferredPrompt) {
+      return false;
+    }
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    setDeferredPrompt(null);
+    setPwaInstallable(false);
+    return outcome === 'accepted';
+  };
 
   // Persist pendingRole & language
   useEffect(() => {
@@ -249,7 +295,7 @@ const App = () => {
         
         // If we are on a setup/auth screen, transition to the correct dashboard
         if (prev === 'Login' || prev === 'Onboarding' || prev === 'RoleSelection') {
-          return pendingRole === 'sell' ? 'SellerDashboard' : 'Home';
+          return 'Home';
         }
         return prev;
       });
@@ -975,6 +1021,9 @@ const App = () => {
               unreadCount={unreadMessagesCount}
               wishlist={wishlist}
               toggleWishlist={toggleWishlist}
+              pwaInstallable={pwaInstallable}
+              pwaInstalled={pwaInstalled}
+              onTriggerPwaInstall={triggerPwaInstall}
             />
           )}
           {currentScreen === 'Onboarding' && (
@@ -983,7 +1032,7 @@ const App = () => {
               language={language} 
               setLanguage={setLanguage}
               onComplete={() => {
-                setCurrentScreen(pendingRole === 'sell' ? 'SellerDashboard' : 'Home');
+                setCurrentScreen('Home');
               }}
             />
           )}
@@ -1047,6 +1096,9 @@ const App = () => {
               setLanguage={setLanguage} 
               setUser={setUser} 
               onStartChatWithUser={startChatWithUser}
+              pwaInstallable={pwaInstallable}
+              pwaInstalled={pwaInstalled}
+              onTriggerPwaInstall={triggerPwaInstall}
             />
           )}
           {currentScreen === 'Notifications' && (
@@ -1193,14 +1245,20 @@ const SectionHeader = ({
   onNotify, 
   onWishlist,
   badge,
-  wishlistCount
+  wishlistCount,
+  onDownload,
+  onInstall,
+  language = 'en'
 }: { 
   title?: string, 
   subtitle?: string, 
   onNotify?: () => void, 
   onWishlist?: () => void,
   badge?: number,
-  wishlistCount?: number
+  wishlistCount?: number,
+  onDownload?: () => void,
+  onInstall?: () => void,
+  language?: 'ta' | 'en'
 }) => (
   <div className="bg-primary text-white p-6 pt-10 shadow-lg relative overflow-hidden">
     {/* Decorative background elements */}
@@ -1214,17 +1272,41 @@ const SectionHeader = ({
       </div>
       <div className="flex gap-2 shrink-0">
         {onWishlist && (
-          <button 
-            onClick={onWishlist}
-            className="bg-white/20 w-12 h-12 rounded-2xl backdrop-blur-md flex items-center justify-center shadow-lg border border-white/10 transition-transform active:scale-95 relative"
-          >
-            <Heart size={24} className="text-white" />
-            {wishlistCount && wishlistCount > 0 && (
-              <span className="absolute -top-1 -right-1 bg-white text-primary text-[10px] font-black w-5 h-5 rounded-full flex items-center justify-center border-2 border-primary shadow-sm">
-                {wishlistCount > 9 ? '9+' : wishlistCount}
-              </span>
+          <div className="flex flex-col items-center">
+            <button 
+              onClick={onWishlist}
+              className="bg-white/20 w-12 h-12 rounded-2xl backdrop-blur-md flex items-center justify-center shadow-lg border border-white/10 transition-transform active:scale-95 relative"
+            >
+              <Heart size={24} className="text-white" />
+              {wishlistCount && wishlistCount > 0 && (
+                <span className="absolute -top-1 -right-1 bg-white text-primary text-[10px] font-black w-5 h-5 rounded-full flex items-center justify-center border-2 border-primary shadow-sm">
+                  {wishlistCount > 9 ? '9+' : wishlistCount}
+                </span>
+              )}
+            </button>
+            {onDownload && onInstall && (
+              <div className="flex flex-col gap-1 mt-1.5 w-[64px] items-center">
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDownload();
+                  }}
+                  className="bg-white/15 hover:bg-white/25 text-white text-[8px] font-black w-full py-1 rounded-lg shadow-sm uppercase tracking-wider text-center active:scale-90 transition-transform border border-white/20 leading-none"
+                >
+                  {language === 'ta' ? 'பதிவிறக்கு' : 'Download'}
+                </button>
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onInstall();
+                  }}
+                  className="bg-amber-400 hover:bg-amber-500 text-slate-950 text-[8px] font-black w-full py-1 rounded-lg shadow-sm uppercase tracking-wider text-center active:scale-90 transition-transform leading-none"
+                >
+                  {language === 'ta' ? 'நிறுவு' : 'Install'}
+                </button>
+              </div>
             )}
-          </button>
+          </div>
         )}
         <button 
           onClick={onNotify}
@@ -1276,11 +1358,102 @@ const HomeScreen = ({
   activeCategory,
   setActiveCategory,
   wishlist = [],
-  toggleWishlist
+  toggleWishlist,
+  pwaInstallable = false,
+  pwaInstalled = false,
+  onTriggerPwaInstall
 }: any) => {
   
   const [showLocationModal, setShowLocationModal] = useState(false);
   const [customLocationInput, setCustomLocationInput] = useState('');
+
+  // Permanent installation states
+  const [showFirstTimePopUp, setShowFirstTimePopUp] = useState(false);
+  const [showIosTutorial, setShowIosTutorial] = useState(false);
+  const [installStatus, setInstallStatus] = useState<'idle' | 'success' | 'failed'>('idle');
+
+  useEffect(() => {
+    // Only show prompt if the user is authenticated & hasn't seen it yet
+    if (user?.uid) {
+      const key = `hasShownDownloadPrompt_${user.uid}`;
+      const hasSeen = localStorage.getItem(key);
+      if (!hasSeen) {
+        // Trigger pop-up with a minor delay so the home page renders cleanly first
+        const timer = setTimeout(() => {
+          setShowFirstTimePopUp(true);
+        }, 1000);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [user?.uid]);
+
+  const handleDismissPopUp = () => {
+    if (user?.uid) {
+      localStorage.setItem(`hasShownDownloadPrompt_${user.uid}`, 'true');
+    }
+    setShowFirstTimePopUp(false);
+  };
+
+  const handleInstallClick = async () => {
+    // Dismiss the first-time pop-up if open
+    handleDismissPopUp();
+
+    if (pwaInstalled) {
+      alert(language === 'ta' ? 'ஆப் ஏற்கனவே உங்கள் சாதனத்தில் வெற்றிகரமாக நிறுவப்பட்டு உள்ளது!' : 'AgriMarket is already installed and running standalone on your device!');
+      return;
+    }
+
+    if (pwaInstallable && onTriggerPwaInstall) {
+      try {
+        const success = await onTriggerPwaInstall();
+        if (success) {
+          setInstallStatus('success');
+        } else {
+          setInstallStatus('failed');
+        }
+      } catch (err) {
+        console.error("Installation failure:", err);
+        setInstallStatus('failed');
+      }
+    } else {
+      const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) || ((navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
+      if (isIos) {
+        setShowIosTutorial(true);
+      } else {
+        alert(language === 'ta' 
+          ? 'உங்கள் சாதனத்தில் நிறுவ: உலாவி மேல் மூலையில் உள்ள மெனுவை (3 புள்ளிகள்) திறந்து "Install app" அல்லது "Add to Home screen" என்பதைத் தேர்ந்தெடுக்கவும்.' 
+          : 'To install: Tap your browser menu (typically three dots in the upper/lower corner) and select "Install app" or "Add to Home screen".');
+      }
+    }
+  };
+
+  const handleDownloadClick = () => {
+    // Dismiss the first-time pop-up if open
+    handleDismissPopUp();
+
+    // 1. Download custom offline configuration metadata
+    try {
+      const manifestData = {
+        app: "AgriMarket",
+        type: "Progressive Web Application Installer Component",
+        version: "1.0.0",
+        downloadedAt: new Date().toISOString(),
+        guidelines: "To complete direct full-screen launch, tap install or add to home screen."
+      };
+      const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(JSON.stringify(manifestData, null, 2))}`;
+      const downloadAnchor = document.createElement('a');
+      downloadAnchor.setAttribute("href", jsonString);
+      downloadAnchor.setAttribute("download", "agrimarket-config.json");
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      downloadAnchor.remove();
+    } catch (err) {
+      console.warn("Dynamic manifest file download failed:", err);
+    }
+
+    // 2. Automatically trigger installation!
+    handleInstallClick();
+  };
 
   // Persist selected location to localStorage whenever it changes
   useEffect(() => {
@@ -1376,6 +1549,9 @@ const HomeScreen = ({
         onWishlist={() => onNavigate('Wishlist')}
         wishlistCount={wishlist.length}
         badge={0}
+        onDownload={handleDownloadClick}
+        onInstall={handleInstallClick}
+        language={language}
       />
       
       <div className="p-4 bg-white sticky top-0 z-40 space-y-3 shadow-sm border-b border-gray-100">
@@ -1662,6 +1838,217 @@ const HomeScreen = ({
               </div>
             </div>
           </motion.div>
+        </div>
+      )}
+
+      {/* First-Time Logged In Installation Pop-Up Modal */}
+      <AnimatePresence>
+        {showFirstTimePopUp && (
+          <>
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={handleDismissPopUp}
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[150]"
+            />
+            {/* Modal Box */}
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 30 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 30 }}
+              className="fixed inset-x-4 top-1/2 -translate-y-1/2 md:max-w-md md:mx-auto bg-white rounded-[32px] p-6 shadow-2xl z-[160] border border-gray-100 overflow-hidden text-center text-gray-700"
+            >
+              {/* Brand Top bar styling */}
+              <div className="absolute top-0 inset-x-0 h-2 bg-gradient-to-r from-[#1D9E75] via-amber-400 to-[#1D9E75]" />
+              
+              <div className="w-16 h-16 bg-emerald-50 rounded-3xl flex items-center justify-center text-primary mx-auto mb-4 border border-emerald-100">
+                <Smartphone size={32} className="text-primary animate-pulse" />
+              </div>
+
+              <h3 className="text-xl font-black text-gray-900 tracking-tight leading-snug">
+                {language === 'ta' ? 'அக்ரி மார்க்கெட் செயலியை நிறுவுக!' : 'Install AgriMarket App!'}
+              </h3>
+              
+              <p className="text-xs text-gray-500 font-bold leading-relaxed mt-3 max-w-sm mx-auto">
+                {language === 'ta' 
+                  ? 'வேகமான ஏற்றுதல், முழு ஆஃப்லைன் ஆதரவு மற்றும் எளிய நேரடி அணுகலை பெற உங்கள் மொபைலில் நிறுவவும்.'
+                  : 'Install on your phone to get lightning-fast load times, offline capability, and easy one-tap access directly from your home screen!'}
+              </p>
+
+              {/* Action Buttons */}
+              <div className="space-y-2 mt-6">
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={handleDownloadClick}
+                    className="w-full bg-emerald-50 text-primary py-3.5 rounded-2xl font-black uppercase text-[10px] tracking-wider border border-emerald-100 active:scale-95 transition-transform"
+                  >
+                    {language === 'ta' ? 'பதிவிறக்கு' : 'Download'}
+                  </button>
+                  <button
+                    onClick={handleInstallClick}
+                    className="w-full bg-primary text-white py-3.5 rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-lg shadow-primary/25 active:scale-95 transition-transform"
+                  >
+                    {language === 'ta' ? 'நிறுவு' : 'Install Now'}
+                  </button>
+                </div>
+                
+                <button
+                  onClick={handleDismissPopUp}
+                  className="w-full text-gray-400 hover:text-gray-600 py-2.5 font-bold text-[10px] uppercase tracking-widest leading-none mt-2 transition-colors block text-center"
+                >
+                  {language === 'ta' ? 'பிறகு செய்கிறேன்' : 'Maybe Later'}
+                </button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* iOS Tutorial Bottom Sheet */}
+      <AnimatePresence>
+        {showIosTutorial && (
+          <>
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowIosTutorial(false)}
+              className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[160]"
+            />
+            {/* Modal */}
+            <motion.div
+              initial={{ opacity: 0, y: 150 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 150 }}
+              className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] bg-white rounded-t-[40px] p-6 pb-10 z-[170] shadow-2xl space-y-6 max-h-[85vh] overflow-y-auto border-t border-gray-100 text-gray-700"
+            >
+              <div className="flex justify-between items-start">
+                <div className="space-y-1">
+                  <span className="text-[10px] font-black text-primary uppercase tracking-widest leading-none">Safari mobile</span>
+                  <h4 className="text-lg font-black text-gray-900 leading-tight">
+                    {language === 'ta' ? 'ஐபோனில் நிறுவுவது எப்படி?' : 'Install on iOS / iPhone'}
+                  </h4>
+                </div>
+                <button 
+                  onClick={() => setShowIosTutorial(false)}
+                  className="w-8 h-8 rounded-full bg-gray-50 flex items-center justify-center text-gray-400 hover:bg-gray-100 transition-colors active:scale-90"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div className="bg-primary/5 p-4 rounded-3xl border border-primary/10 flex items-center gap-3">
+                  <div className="w-10 h-10 shrink-0 bg-primary/10 text-primary rounded-2xl flex items-center justify-center">
+                    <Smartphone size={20} />
+                  </div>
+                  <p className="text-xs font-black text-primary leading-tight">
+                    {language === 'ta' 
+                      ? 'இதனை தனியொரு மொபைல் செயலியாக உங்கள் முகப்புத் திரையில் சேர்த்துக் கொள்ளலாம்.'
+                      : 'Add AgriMarket as a desktop-like shortcut to access instantly directly on your iOS Home Screen.'}
+                  </p>
+                </div>
+
+                <div className="space-y-3 font-sans">
+                  {/* Step 1 */}
+                  <div className="flex items-start gap-4 p-3 rounded-2xl hover:bg-gray-50 transition-colors">
+                    <div className="w-8 h-8 bg-gray-100 text-gray-800 rounded-xl flex items-center justify-center font-black text-xs shrink-0 font-mono">
+                      1
+                    </div>
+                    <div className="text-left animate-in fade-in slide-in-from-left duration-300">
+                      <span className="text-xs font-black text-gray-950 block leading-tight">
+                        {language === 'ta' ? 'பகிர் பொத்தானைத் தட்டவும்' : 'Tap the Share Button'}
+                      </span>
+                      <p className="text-[11px] text-gray-400 font-bold leading-normal mt-0.5">
+                        {language === 'ta' 
+                          ? 'சஃபாரி (Safari) உலாவியின் கீழே உள்ள "Share" (பகிர்) சின்னத்தைத் தட்டவும்.' 
+                          : 'Press the standard Share button at the bottom navigation bar of Safari.'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Step 2 */}
+                  <div className="flex items-start gap-4 p-3 rounded-2xl hover:bg-gray-50 transition-colors">
+                    <div className="w-8 h-8 bg-gray-100 text-gray-800 rounded-xl flex items-center justify-center font-black text-xs shrink-0 font-mono">
+                      2
+                    </div>
+                    <div className="text-left animate-in fade-in slide-in-from-left duration-350">
+                      <span className="text-xs font-black text-gray-950 block leading-tight">
+                        {language === 'ta' ? '"முகப்புத் திரையில் சேர்" என்பதைத் தேர்வுசெய்க' : 'Select "Add to Home Screen"'}
+                      </span>
+                      <p className="text-[11px] text-gray-400 font-bold leading-normal mt-0.5">
+                        {language === 'ta' 
+                          ? 'மெனுவில் கீழே நகர்த்தி "Add to Home Screen" என்ற தேர்வை சொடுக்கவும்.' 
+                          : 'Scroll down through the options menu and select "Add to Home Screen" option.'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Step 3 */}
+                  <div className="flex items-start gap-4 p-3 rounded-2xl hover:bg-gray-50 transition-colors">
+                    <div className="w-8 h-8 bg-gray-100 text-gray-800 rounded-xl flex items-center justify-center font-black text-xs shrink-0 font-mono">
+                      3
+                    </div>
+                    <div className="text-left animate-in fade-in slide-in-from-left duration-400">
+                      <span className="text-xs font-black text-gray-950 block leading-tight">
+                        {language === 'ta' ? '"Add" என்பதைத் தட்டவும்' : 'Confirm & Complete'}
+                      </span>
+                      <p className="text-[11px] text-gray-400 font-bold leading-normal mt-0.5">
+                        {language === 'ta' 
+                          ? 'மேலே வலது மூலையில் உள்ள "Add" (சேர்) பொத்தானை அழுத்தி நிறுவலை முடிக்கலாம்.' 
+                          : 'Press "Add" in the top-right corner to place the app directly next to other phone apps.'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <button 
+                onClick={() => setShowIosTutorial(false)}
+                className="w-full bg-primary text-white py-4 rounded-3xl font-black shadow-lg shadow-primary/20 uppercase tracking-[0.2em] text-[10px] flex items-center justify-center gap-2 active:scale-95 transition-transform"
+              >
+                {language === 'ta' ? 'புரிந்தது / சரி' : 'Great, Done'}
+              </button>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* Install Success / Error Status toast */}
+      {installStatus !== 'idle' && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[200] w-11/12 max-w-[380px]">
+          <div className={`p-4 rounded-3xl shadow-xl flex items-center gap-3 border ${
+            installStatus === 'success' 
+              ? 'bg-emerald-50 border-emerald-100 text-emerald-800' 
+              : 'bg-rose-50 border-rose-100 text-rose-800'
+          }`}>
+            <div className={`w-8 h-8 rounded-2xl flex items-center justify-center shrink-0 ${
+              installStatus === 'success' ? 'bg-emerald-100' : 'bg-rose-100'
+            }`}>
+              {installStatus === 'success' ? <Check size={16} /> : <X size={16} />}
+            </div>
+            <div className="text-left font-sans flex-1">
+              <span className="text-xs font-black block leading-none">
+                {installStatus === 'success' 
+                  ? (language === 'ta' ? 'அமைவு வெற்றிகரமாகத் தொடங்கியது!' : 'Installation Initiated!')
+                  : (language === 'ta' ? 'அமைவு ரத்து செய்யப்பட்டது' : 'Installation Canceled')}
+              </span>
+              <p className="text-[10px] text-gray-400 font-bold leading-normal mt-0.5">
+                {installStatus === 'success'
+                  ? (language === 'ta' ? 'முகப்புத் திரையிலிருந்து AgriMarket ஐத் திறக்கலாம்.' : 'Check your app drawer or home screen to launch AgriMarket.')
+                  : (language === 'ta' ? 'நிறுவல் செயல்முறை ரத்து செய்யப்பட்டது.' : 'The install prompt was dismissed or rejected.')}
+              </p>
+            </div>
+            <button 
+              onClick={() => setInstallStatus('idle')}
+              className="text-[10px] font-black uppercase tracking-wider text-gray-400 hover:text-gray-600 px-2"
+            >
+              Okay
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -2986,12 +3373,26 @@ const PricesScreen = ({ language, mandiPrices, user }: { language: 'ta' | 'en', 
   );
 };
 
-const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, setLanguage, setUser, onStartChatWithUser }: any) => {
+const ProfileScreen = ({ 
+  user, 
+  viewingUserId, 
+  onLogout, 
+  onNavigate, 
+  language, 
+  setLanguage, 
+  setUser, 
+  onStartChatWithUser,
+  pwaInstallable = false,
+  pwaInstalled = false,
+  onTriggerPwaInstall
+}: any) => {
   const targetUserId = viewingUserId || user?.uid;
   const isOwnProfile = targetUserId === user?.uid;
   
   const [isEditing, setIsEditing] = useState(false);
   const [showReviewsView, setShowReviewsView] = useState(false);
+  const [showIosTutorial, setShowIosTutorial] = useState(false);
+  const [installStatus, setInstallStatus] = useState<'idle' | 'success' | 'failed'>('idle');
   const [profileData, setProfileData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [reviews, setReviews] = useState<Review[]>([]);
@@ -3423,6 +3824,14 @@ const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, se
                     { icon: <MessageSquare size={20} />, label: language === 'ta' ? 'செய்திகள்' : 'Messages', id: 'chats', sub: language === 'ta' ? 'உரையாடல்கள்' : 'Alerts & news' },
                     { icon: <Bookmark size={20} />, label: language === 'ta' ? 'சேமித்தவை' : 'Saved', id: 'saved', sub: 'Watchlist' },
                     { icon: <Globe size={20} />, label: language === 'ta' ? 'மொழி / Language' : 'Language Selection', id: 'language', sub: languageNames[language] },
+                    { 
+                      icon: <Smartphone size={20} />, 
+                      label: language === 'ta' ? 'செயலியை மொபைலில் நிறுவு' : 'Install Mobile App', 
+                      id: 'install', 
+                      sub: pwaInstalled 
+                        ? (language === 'ta' ? 'நிறுவப்பட்டது (தனித்த வடிவம்)' : 'Installed - Running standalone') 
+                        : (language === 'ta' ? 'விரைவாக அணுக மொபைலில் நிறுவுக' : 'Get quick desktop/mobile app access') 
+                    },
                     { icon: <Star size={20} />, label: language === 'ta' ? 'மதிப்பாய்வுகள்' : 'Reviews', id: 'reviews', sub: language === 'ta' ? `${reviews.length} கருத்துக்கள்` : `My feedback & ratings (${reviews.length})` },
                     { icon: <HelpCircle size={20} />, label: language === 'ta' ? 'உதவி' : 'Help center', id: 'help', sub: 'Contact support' },
                   ].map((item, i, arr) => (
@@ -3433,6 +3842,30 @@ const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, se
                         if (item.id === 'saved') onNavigate('Wishlist');
                         if (item.id === 'reviews') {
                           setShowReviewsView(true);
+                        }
+                        if (item.id === 'install') {
+                          if (pwaInstalled) {
+                            alert(language === 'ta' ? 'ஆப் ஏற்கனவே உங்கள் சாதனத்தில் வெற்றிகரமாக நிறுவப்பட்டு உள்ளது!' : 'AgriMarket is already installed and running standalone on your device!');
+                            return;
+                          }
+                          if (pwaInstallable && onTriggerPwaInstall) {
+                            onTriggerPwaInstall().then((success: boolean) => {
+                              if (success) {
+                                setInstallStatus('success');
+                              } else {
+                                setInstallStatus('failed');
+                              }
+                            });
+                          } else {
+                            const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) || ((navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
+                            if (isIos) {
+                              setShowIosTutorial(true);
+                            } else {
+                              alert(language === 'ta' 
+                                ? 'உங்கள் மொபைல் உலாவி மெனுவை (3 புள்ளிகள்) திறந்து "Install app" அல்லது "Add to Home screen" என்பதைத் தேர்ந்தெடுக்கவும்.' 
+                                : 'To install: Tap your browser menu (three dots in upper/lower corner) and select "Install app" or "Add to Home screen".');
+                            }
+                          }
                         }
                         if (item.id === 'language') {
                           const nextLang = languages[(languages.indexOf(language) + 1) % languages.length];
@@ -3622,6 +4055,155 @@ const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, se
           </>
         )}
       </AnimatePresence>
+
+      {/* iOS Installation Instructions Bottom Sheet */}
+      <AnimatePresence>
+        {showIosTutorial && (
+          <>
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowIosTutorial(false)}
+              className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[160]"
+            />
+            {/* Modal */}
+            <motion.div
+              initial={{ opacity: 0, y: 150 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 150 }}
+              className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] bg-white rounded-t-[40px] p-6 pb-10 z-[170] shadow-2xl space-y-6 max-h-[85vh] overflow-y-auto border-t border-gray-100"
+            >
+              {/* Header */}
+              <div className="flex justify-between items-start">
+                <div className="space-y-1">
+                  <span className="text-[10px] font-black text-primary uppercase tracking-widest leading-none">Safari mobile</span>
+                  <h4 className="text-lg font-black text-gray-900 leading-tight">
+                    {language === 'ta' ? 'ஐபோனில் நிறுவுவது எப்படி?' : 'Install on iOS / iPhone'}
+                  </h4>
+                </div>
+                <button 
+                  onClick={() => setShowIosTutorial(false)}
+                  className="w-8 h-8 rounded-full bg-gray-50 flex items-center justify-center text-gray-400 hover:bg-gray-100 transition-colors active:scale-90"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              {/* Steps Layout */}
+              <div className="space-y-4">
+                <div className="bg-primary/5 p-4 rounded-3xl border border-primary/10 flex items-center gap-3">
+                  <div className="w-10 h-10 shrink-0 bg-primary/10 text-primary rounded-2xl flex items-center justify-center">
+                    <Smartphone size={20} />
+                  </div>
+                  <p className="text-xs font-black text-primary leading-tight">
+                    {language === 'ta' 
+                      ? 'இதனை தனியொரு மொபைல் செயலியாக உங்கள் முகப்புத் திரையில் சேர்த்துக் கொள்ளலாம்.'
+                      : 'Add AgriMarket as a desktop-like shortcut to access instantly directly on your iOS Home Screen.'}
+                  </p>
+                </div>
+
+                <div className="space-y-3 font-sans">
+                  {/* Step 1 */}
+                  <div className="flex items-start gap-4 p-3 rounded-2xl hover:bg-gray-50 transition-colors">
+                    <div className="w-8 h-8 bg-gray-100 text-gray-800 rounded-xl flex items-center justify-center font-black text-xs shrink-0 font-mono">
+                      1
+                    </div>
+                    <div className="text-left">
+                      <span className="text-xs font-black text-gray-950 block leading-tight">
+                        {language === 'ta' ? 'பகிர் பொத்தானைத் தட்டவும்' : 'Tap the Share Button'}
+                      </span>
+                      <p className="text-[11px] text-gray-400 font-bold leading-normal mt-0.5">
+                        {language === 'ta' 
+                          ? 'சஃபாரி (Safari) உலாவியின் கீழே உள்ள "Share" (பகிர்) சின்னத்தைத் தட்டவும்.' 
+                          : 'Press the standard Share button at the bottom navigation bar of Safari.'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Step 2 */}
+                  <div className="flex items-start gap-4 p-3 rounded-2xl hover:bg-gray-50 transition-colors">
+                    <div className="w-8 h-8 bg-gray-100 text-gray-800 rounded-xl flex items-center justify-center font-black text-xs shrink-0 font-mono">
+                      2
+                    </div>
+                    <div className="text-left">
+                      <span className="text-xs font-black text-gray-950 block leading-tight">
+                        {language === 'ta' ? '"முகப்புத் திரையில் சேர்" என்பதைத் தேர்வுசெய்க' : 'Select "Add to Home Screen"'}
+                      </span>
+                      <p className="text-[11px] text-gray-400 font-bold leading-normal mt-0.5">
+                        {language === 'ta' 
+                          ? 'மெனுவில் கீழே நகர்த்தி "Add to Home Screen" என்ற தேர்வை சொடுக்கவும்.' 
+                          : 'Scroll down through the options menu and select "Add to Home Screen" option.'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Step 3 */}
+                  <div className="flex items-start gap-4 p-3 rounded-2xl hover:bg-gray-50 transition-colors">
+                    <div className="w-8 h-8 bg-gray-100 text-gray-800 rounded-xl flex items-center justify-center font-black text-xs shrink-0 font-mono">
+                      3
+                    </div>
+                    <div className="text-left">
+                      <span className="text-xs font-black text-gray-950 block leading-tight">
+                        {language === 'ta' ? '"Add" என்பதைத் தட்டவும்' : 'Confirm & Complete'}
+                      </span>
+                      <p className="text-[11px] text-gray-400 font-bold leading-normal mt-0.5">
+                        {language === 'ta' 
+                          ? 'மேலே வலது மூலையில் உள்ள "Add" (சேர்) பொத்தானை அழுத்தி நிறுவலை முடிக்கலாம்.' 
+                          : 'Press "Add" in the top-right corner to place the app directly next to other phone apps.'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <button 
+                onClick={() => setShowIosTutorial(false)}
+                className="w-full bg-primary text-white py-4 rounded-3xl font-black shadow-lg shadow-primary/20 uppercase tracking-[0.2em] text-[10px] flex items-center justify-center gap-2 active:scale-95 transition-transform"
+              >
+                {language === 'ta' ? 'புரிந்தது / சரி' : 'Great, Done'}
+              </button>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* Install Success / Error Status indicator */}
+      {installStatus !== 'idle' && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[200] w-11/12 max-w-[380px]">
+          <div className={`p-4 rounded-3xl shadow-xl flex items-center gap-3 border ${
+            installStatus === 'success' 
+              ? 'bg-emerald-50 border-emerald-100 text-emerald-800' 
+              : 'bg-rose-50 border-rose-100 text-rose-800'
+          }`}>
+            <div className={`w-8 h-8 rounded-2xl flex items-center justify-center shrink-0 ${
+              installStatus === 'success' ? 'bg-emerald-100' : 'bg-rose-100'
+            }`}>
+              {installStatus === 'success' ? <Check size={16} /> : <X size={16} />}
+            </div>
+            <div className="text-left font-sans flex-1">
+              <span className="text-xs font-black block leading-none">
+                {installStatus === 'success' 
+                  ? (language === 'ta' ? 'செயலி வெற்றிகரமாக நிறுவப்பட்டது!' : 'Installation Initiated!')
+                  : (language === 'ta' ? 'நிறுவல் ரத்து செய்யப்பட்டது' : 'Installation Canceled')}
+              </span>
+              <p className="text-[10px] text-gray-400 font-bold leading-normal mt-0.5">
+                {installStatus === 'success'
+                  ? (language === 'ta' ? 'நீங்கள் இப்போது முகப்புத் திரையில் இருந்து நேரடியாக நுழையலாம்.' : 'Check your home screen or applications menu to launch AgriMarket.')
+                  : (language === 'ta' ? 'நிறுவல் செயல்முறை பயனரால் ரத்து செய்யப்பட்டது.' : 'The prompt was dismissed or installation request was rejected.')}
+              </p>
+            </div>
+            <button 
+              onClick={() => setInstallStatus('idle')}
+              className="text-[10px] font-black uppercase tracking-wider text-gray-400 hover:text-gray-600 px-2"
+            >
+              Okay
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
