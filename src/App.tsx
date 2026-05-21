@@ -648,6 +648,16 @@ const App = () => {
         console.log("startChat: Found existing conversation", existingConvo.id);
         const data = existingConvo.data();
         const otherParticipantId = data.participants.find((p: string) => p !== currentUserId);
+        
+        try {
+          await updateDoc(doc(db, 'conversations', existingConvo.id), {
+            [`deletedUsers.${currentUserId}`]: false,
+            [`archivedUsers.${currentUserId}`]: false
+          });
+        } catch (e) {
+          console.warn("Could not reset deleted/archived status on open:", e);
+        }
+
         navigateTo('ChatRoom', { 
           id: existingConvo.id, 
           participantName: data.participantNames?.[otherParticipantId] || listing.farmerName || 'User',
@@ -720,14 +730,26 @@ const App = () => {
         deletedForUsers: {}
       });
 
-      await updateDoc(doc(db, 'conversations', convoId), {
+      const updates: any = {
         lastMessage: text,
         lastMessageTime: 'Just now',
         lastMessageSenderId: auth.currentUser?.uid,
         unreadCount: increment(1),
         updatedAt: serverTimestamp(),
-        deletedUsers: {}
-      });
+        deletedUsers: {},
+        archivedUsers: {}
+      };
+
+      // Explicitly clear deleted and archived fields for both participants
+      const localConvo = conversations.find(c => c.id === convoId);
+      if (localConvo && localConvo.participants) {
+        localConvo.participants.forEach((p: string) => {
+          updates[`deletedUsers.${p}`] = false;
+          updates[`archivedUsers.${p}`] = false;
+        });
+      }
+
+      await updateDoc(doc(db, 'conversations', convoId), updates);
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, `conversations/${convoId}/messages`);
     }
