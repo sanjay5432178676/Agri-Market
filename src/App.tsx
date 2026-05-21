@@ -48,7 +48,12 @@ import {
   Archive,
   Trash,
   MoreVertical,
-  MoreHorizontal
+  MoreHorizontal,
+  Mic,
+  Play,
+  Pause,
+  Volume2,
+  Square
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { onAuthStateChanged, signOut, GoogleAuthProvider, signInWithPopup, signInAnonymously, updateProfile, RecaptchaVerifier, signInWithPhoneNumber, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
@@ -716,12 +721,83 @@ const App = () => {
     }
   };
 
-  const handleSendMessage = async (convoId: string, text: string) => {
+  const startChatWithUser = async (otherUserId: string, otherUserName: string) => {
+    if (!isLoggedIn || !auth.currentUser) {
+      navigateTo('Login');
+      return;
+    }
+    const currentUserId = auth.currentUser.uid;
+    if (otherUserId === currentUserId) {
+      alert(language === 'ta' ? 'உங்கள் சொந்த உரையாடல் முடியாது!' : 'You cannot chat with yourself!');
+      return;
+    }
+    try {
+      // Check if conversation already exists
+      const q = query(
+        collection(db, 'conversations'),
+        where('participants', 'array-contains', currentUserId)
+      );
+      const querySnapshot = await getDocs(q);
+      
+      let existingConvo = querySnapshot.docs.find(doc => {
+        const data = doc.data();
+        return (data.participants as string[] || []).includes(otherUserId);
+      });
+
+      if (existingConvo) {
+        const data = existingConvo.data();
+        try {
+          await updateDoc(doc(db, 'conversations', existingConvo.id), {
+            [`deletedUsers.${currentUserId}`]: false,
+            [`archivedUsers.${currentUserId}`]: false
+          });
+        } catch (e) {
+          console.warn("Could not reset deleted/archived status on open:", e);
+        }
+
+        navigateTo('ChatRoom', { 
+          id: existingConvo.id, 
+          participantName: data.participantNames?.[otherUserId] || otherUserName || 'User',
+          participantAvatar: data.participantAvatars?.[otherUserId] || '🌱',
+          ...data 
+        });
+      } else {
+        const docRef = await addDoc(collection(db, 'conversations'), {
+          participants: [currentUserId, otherUserId],
+          participantNames: {
+            [currentUserId]: user?.name || auth.currentUser.displayName || 'User',
+            [otherUserId]: otherUserName || 'User'
+          },
+          participantAvatars: {
+            [currentUserId]: '👨‍🌾',
+            [otherUserId]: '🌱'
+          },
+          lastMessage: 'Starting conversation...',
+          lastMessageTime: 'Just now',
+          updatedAt: serverTimestamp(),
+          unreadCount: 0
+        });
+        
+        const newConvo = {
+          id: docRef.id,
+          participants: [currentUserId, otherUserId],
+          participantName: otherUserName || 'User',
+          participantAvatar: '🌱'
+        };
+        navigateTo('ChatRoom', newConvo);
+      }
+    } catch (err) {
+      console.error("Error in startChatWithUser:", err);
+    }
+  };
+
+  const handleSendMessage = async (convoId: string, text: string, audioUrl?: string) => {
     try {
       const msgRef = collection(db, 'conversations', convoId, 'messages');
       await addDoc(msgRef, {
         senderId: auth.currentUser?.uid,
         text,
+        audioUrl: audioUrl || null,
         isRead: false,
         isDelivered: false,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -970,6 +1046,7 @@ const App = () => {
               language={language} 
               setLanguage={setLanguage} 
               setUser={setUser} 
+              onStartChatWithUser={startChatWithUser}
             />
           )}
           {currentScreen === 'Notifications' && (
@@ -999,7 +1076,7 @@ const App = () => {
           {currentScreen === 'ChatRoom' && activeConversation && (
             <ChatRoomScreen 
               conversation={activeConversation} 
-              onSendMessage={(text) => handleSendMessage(activeConversation.id, text)}
+              onSendMessage={(text, audioUrl) => handleSendMessage(activeConversation.id, text, audioUrl)}
               onBack={() => navigateTo('ChatList')} 
               onViewProfile={(uid) => navigateTo('Profile', uid)}
               language={language}
@@ -1399,71 +1476,102 @@ const HomeScreen = ({
           {language === 'ta' ? 'சிறப்பம்சங்கள் / Featured' : 'Featured / சிறப்பம்சங்கள்'}
         </h2>
         
-        {displayListings.length > 0 ? displayListings.map((listing: any) => (
-          <motion.div 
-            key={listing.id}
-            whileTap={{ scale: 0.98 }}
-            onClick={() => onNavigate('Detail', listing)}
-            className="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden p-3"
-          >
-            <div className="flex gap-4">
-              <div className="w-24 h-24 bg-gradient-to-br from-green-50 to-green-100 rounded-3xl flex items-center justify-center text-4xl shadow-inner shrink-0 overflow-hidden relative">
-                {listing.imageUrl ? (
-                  <img src={listing.imageUrl} alt={listing.titleEn} className="w-full h-full object-cover" />
-                ) : (
-                  listing.photoEmoji
-                )}
-                <button 
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleWishlist(listing.id);
-                  }}
-                  className="absolute top-1 right-1 w-7 h-7 bg-white/90 rounded-full flex items-center justify-center shadow-sm active:scale-90 transition-transform"
-                >
-                  <Heart size={14} className={wishlist.includes(listing.id) ? 'fill-red-500 text-red-500' : 'text-gray-400'} />
-                </button>
-              </div>
-              <div className="flex-1 flex flex-col pt-1">
-                <div className="flex justify-between items-start">
-                  <h3 className="font-black text-gray-800 leading-tight">
-                    {language === 'ta' ? listing.titleTa : listing.titleEn}
-                    <span className="text-[10px] font-medium text-gray-400 block mt-0.5">
-                      {language === 'ta' ? listing.titleEn : listing.titleTa}
-                    </span>
-                  </h3>
-                  {listing.isVerified && (
-                    <span className="bg-blue-100 text-blue-700 text-[9px] font-black px-2 py-0.5 rounded-full uppercase shrink-0 flex items-center gap-1">
-                      <ShieldCheck size={10} />
-                      VERIFIED
-                    </span>
+        {displayListings.length > 0 ? (
+          <div className="grid grid-cols-2 gap-3 pb-6">
+            {displayListings.map((listing: any) => (
+              <motion.div 
+                key={listing.id}
+                whileTap={{ scale: 0.98 }}
+                onClick={() => onNavigate('Detail', listing)}
+                className="bg-white rounded-[24px] border border-gray-100 shadow-sm overflow-hidden p-2.5 flex flex-col h-full hover:shadow-md transition-shadow duration-300"
+              >
+                {/* Image Container */}
+                <div className="aspect-square bg-gradient-to-br from-green-50 to-green-100 rounded-[18px] flex items-center justify-center text-4xl shadow-inner shrink-0 overflow-hidden relative">
+                  {listing.imageUrl ? (
+                    <img src={listing.imageUrl} alt={listing.titleEn} className="w-full h-full object-cover" />
+                  ) : (
+                    <span className="text-5xl">{listing.photoEmoji || '📦'}</span>
                   )}
-                </div>
-                <p className="text-xl font-black text-primary mt-1">₹{listing.price}/{listing.unit}</p>
-                <div className="mt-auto flex items-center justify-between">
-                  <div className="flex flex-col">
-                    <span className="text-[11px] font-bold text-gray-800">
-                      <UserName userId={listing.farmerId} fallback={listing.farmerName} /> • {listing.location}
-                    </span>
-                    <span className="text-[10px] font-bold text-gray-400">Qty: {listing.quantity}</span>
-                  </div>
+                  {/* Heart Button */}
                   <button 
                     onClick={(e) => {
                       e.stopPropagation();
-                      onNavigate('Detail', listing);
+                      toggleWishlist(listing.id);
                     }}
-                    className="bg-primary text-white text-[10px] font-black px-4 py-2 rounded-xl shadow-lg shadow-primary/20 uppercase tracking-wide"
+                    className="absolute top-1.5 right-1.5 w-7 h-7 bg-white/90 rounded-full flex items-center justify-center shadow-sm active:scale-90 transition-transform z-10"
                   >
-                    {language === 'ta' ? 'தொடர்பு' : 'Contact'}
+                    <Heart size={14} className={wishlist.includes(listing.id) ? 'fill-red-500 text-red-500' : 'text-gray-400'} />
                   </button>
+                  {/* Verified badge overlaid on top-left of image */}
+                  {listing.isVerified && (
+                    <div className="absolute top-1.5 left-1.5 bg-blue-500 text-white text-[8px] font-black px-1.5 py-0.5 rounded-md uppercase tracking-wider flex items-center gap-0.5 shadow-sm z-10">
+                      <ShieldCheck size={8} />
+                      OK
+                    </div>
+                  )}
                 </div>
-              </div>
-            </div>
-          </motion.div>
-        )) : (
+
+                {/* Content Container */}
+                <div className="flex-1 flex flex-col pt-2 pb-1 px-1 justify-between">
+                  <div>
+                    {/* Title */}
+                    <h3 className="font-black text-gray-800 text-[12px] leading-tight line-clamp-2 min-h-[32px]">
+                      {language === 'ta' ? listing.titleTa : listing.titleEn}
+                      <span className="text-[10px] font-medium text-gray-400 block truncate mt-0.5">
+                        {language === 'ta' ? listing.titleEn : listing.titleTa}
+                      </span>
+                    </h3>
+
+                    {/* Price with styling */}
+                    <p className="text-sm font-black text-primary mt-1.5">₹{listing.price}/{listing.unit}</p>
+
+                    {/* Quantity & Location */}
+                    <div className="mt-1 space-y-0.5">
+                      <button 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (listing.farmerId) {
+                            onNavigate('Profile', listing.farmerId);
+                          }
+                        }}
+                        className="text-[10px] font-black text-primary hover:underline hover:text-primary/80 transition-colors flex items-center gap-1 leading-none truncate cursor-pointer text-left focus:outline-none"
+                      >
+                        <span className="truncate">
+                          <UserName userId={listing.farmerId} fallback={listing.farmerName} />
+                        </span>
+                      </button>
+                      <div className="text-[9px] font-bold text-gray-400 capitalize truncate flex items-center gap-0.5 leading-none">
+                        <MapPin size={8} className="translate-y-[-0.5px]" />
+                        <span>{listing.location}</span>
+                      </div>
+                      <div className="text-[9px] font-bold text-gray-400 leading-none">
+                        {language === 'ta' ? 'அளவு:' : 'Qty:'} {listing.quantity}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Compact, perfectly aligned Contact Button at the bottom */}
+                  <div className="mt-3 pt-1">
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onNavigate('Detail', listing);
+                      }}
+                      className="w-full bg-primary text-white text-[10px] font-black py-2 rounded-xl shadow-md shadow-primary/15 hover:shadow-lg hover:shadow-primary/25 uppercase tracking-wider text-center flex items-center justify-center gap-1 active:scale-95 transition-all"
+                    >
+                      <Phone size={10} />
+                      <span>{language === 'ta' ? 'தொடர்பு' : 'Contact'}</span>
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            ))}
+          </div>
+        ) : (
           <div className="py-20 text-center space-y-4">
             <div className="text-6xl grayscale opacity-20">🚜</div>
             <div className="space-y-1">
-              <h3 className="text-lg font-black text-gray-900">
+              <h3 className="text-lg font-black text-gray-950">
                 {language === 'ta' ? 'தயாரிப்புகள் இல்லை' : 'No products found'}
               </h3>
               <p className="text-xs text-gray-400 font-bold uppercase tracking-widest px-10 leading-relaxed">
@@ -2150,7 +2258,7 @@ const DetailScreen = ({ listing, onBack, onLogin, language, onStartChat, onViewP
         </div>
       </div>
 
-      <div className="fixed bottom-0 w-full max-w-[430px] p-4 bg-white/95 backdrop-blur-xl border-t border-gray-100 flex flex-col gap-3 z-[60] pb-8 left-1/2 -translate-x-1/2 shadow-[0_-10px_30px_rgba(0,0,0,0.05)]">
+      <div className="fixed bottom-0 w-full max-w-[430px] p-4 bg-white/95 backdrop-blur-xl border-t border-gray-100 flex flex-col gap-2.5 z-[60] pb-8 left-1/2 -translate-x-1/2 shadow-[0_-10px_30px_rgba(0,0,0,0.05)]">
         <div className="flex gap-2">
           <a 
             href={isLoggedIn && listing.phone ? `tel:${listing.phone}` : '#'}
@@ -2167,7 +2275,7 @@ const DetailScreen = ({ listing, onBack, onLogin, language, onStartChat, onViewP
             }}
             className="flex-1 bg-primary text-white py-4 rounded-2xl font-black flex items-center justify-center gap-2 shadow-xl shadow-primary/30 uppercase tracking-widest text-[11px] no-underline active:scale-95 transition-transform"
           >
-            <Phone size={18} />
+            <Phone size={16} />
             {language === 'ta' ? 'அழைக்கவும்' : 'Call Farmer'}
           </a>
           <button 
@@ -2196,36 +2304,36 @@ const DetailScreen = ({ listing, onBack, onLogin, language, onStartChat, onViewP
               <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
             ) : (
               <>
-                <MessageSquare size={18} />
+                <MessageSquare size={16} />
                 {language === 'ta' ? 'சாட் செய்ய' : 'Live Chat'}
               </>
             )}
           </button>
         </div>
-          <a 
-            href={isLoggedIn ? getWaLink() : '#'}
-            target={isLoggedIn ? "_blank" : "_self"}
-            rel="noreferrer"
-            onClick={(e) => {
-              if (!isLoggedIn) {
-                e.preventDefault();
-                onLogin();
-                return;
-              }
-              if (!listing.phone) {
-                e.preventDefault();
-                alert(language === 'ta' ? 'தொலைபேசி எண் வழங்கப்படவில்லை' : 'Phone number not provided');
-              }
-            }}
-            className="w-full bg-[#25D366] hover:bg-[#20ba5a] text-white py-5 rounded-[22px] font-black flex items-center justify-center gap-3 shadow-[0_8px_30px_rgb(37_211_102_/_30%)] uppercase tracking-[0.1em] text-[12px] no-underline active:scale-[0.98] transition-all relative overflow-hidden"
-          >
-            <div className="shrink-0 flex items-center justify-center w-6 h-6 z-10">
-              <svg viewBox="0 0 24 24" fill="currentColor" className="w-full h-full drop-shadow-md">
-                <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.414 0 .011 5.403.01 12.039c0 2.12.553 4.189 1.603 6.006L0 24l6.149-1.613a11.815 11.815 0 005.9 1.564h.005c6.635 0 12.037-5.405 12.04-12.04.001-3.214-1.248-6.234-3.513-8.5l-.001-.001z" />
-              </svg>
-            </div>
-            <span className="z-10">{language === 'ta' ? 'வாட்ஸ்அப் மூலம் கேட்கவும்' : 'Contact via WhatsApp'}</span>
-          </a>
+        <a 
+          href={isLoggedIn ? getWaLink() : '#'}
+          target={isLoggedIn ? "_blank" : "_self"}
+          rel="noreferrer"
+          onClick={(e) => {
+            if (!isLoggedIn) {
+              e.preventDefault();
+              onLogin();
+              return;
+            }
+            if (!listing.phone) {
+              e.preventDefault();
+              alert(language === 'ta' ? 'தொலைபேசி எண் வழங்கப்படவில்லை' : 'Phone number not provided');
+            }
+          }}
+          className="w-full bg-[#25D366] hover:bg-[#20ba5a] text-white py-4 rounded-2xl font-black flex items-center justify-center gap-2 shadow-[0_8px_30px_rgb(37_211_102_/_30%)] uppercase tracking-widest text-[11px] no-underline active:scale-[0.98] transition-all relative overflow-hidden"
+        >
+          <div className="shrink-0 flex items-center justify-center w-5 h-5 z-10">
+            <svg viewBox="0 0 24 24" fill="currentColor" className="w-full h-full drop-shadow-md">
+              <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.414 0 .011 5.403.01 12.039c0 2.12.553 4.189 1.603 6.006L0 24l6.149-1.613a11.815 11.815 0 005.9 1.564h.005c6.635 0 12.037-5.405 12.04-12.04.001-3.214-1.248-6.234-3.513-8.5l-.001-.001z" />
+            </svg>
+          </div>
+          <span className="z-10">{language === 'ta' ? 'வாட்ஸ்அப் மூலம் கேட்கவும்' : 'Contact via WhatsApp'}</span>
+        </a>
       </div>
     </div>
   );
@@ -2878,11 +2986,12 @@ const PricesScreen = ({ language, mandiPrices, user }: { language: 'ta' | 'en', 
   );
 };
 
-const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, setLanguage, setUser }: any) => {
+const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, setLanguage, setUser, onStartChatWithUser }: any) => {
   const targetUserId = viewingUserId || user?.uid;
   const isOwnProfile = targetUserId === user?.uid;
   
   const [isEditing, setIsEditing] = useState(false);
+  const [showReviewsView, setShowReviewsView] = useState(false);
   const [profileData, setProfileData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [reviews, setReviews] = useState<Review[]>([]);
@@ -2900,6 +3009,12 @@ const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, se
     photoEmoji: '👨‍🌾'
   });
   const [isSaving, setIsSaving] = useState(false);
+
+  const averageRating = useMemo(() => {
+    if (!reviews || reviews.length === 0) return '0.0';
+    const sum = reviews.reduce((acc, r) => acc + (r.rating || 0), 0);
+    return (sum / reviews.length).toFixed(1);
+  }, [reviews]);
 
   const availableDistricts = useMemo(() => {
     const stateData = LOCATION_DATA.find(s => s.state === editForm.state);
@@ -3159,7 +3274,7 @@ const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, se
         <div className="grid grid-cols-2 gap-4">
           {[
             { label: language === 'ta' ? 'பதிவுகள்' : 'Listings', value: profileData?.activeListings || '0', icon: <BarChart2 size={16} /> },
-            { label: language === 'ta' ? 'மதிப்பீடு' : 'Rating', value: profileData?.rating || '0.0', icon: <Star size={16} />, sub: `(${reviews.length})` },
+            { label: language === 'ta' ? 'மதிப்பீடு' : 'Rating', value: averageRating, icon: <Star size={16} />, sub: `(${reviews.length})` },
           ].map((stat, i) => (
             <div key={i} className="bg-white p-4 rounded-[32px] border border-gray-100 shadow-sm flex flex-col items-center justify-center text-center">
                <div className="text-primary mb-1 opacity-40">{stat.icon}</div>
@@ -3168,7 +3283,6 @@ const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, se
             </div>
           ))}
         </div>
-
         {isEditing ? (
           <div className="bg-white p-6 rounded-[40px] border border-gray-100 shadow-xl space-y-5">
             <div className="flex justify-between items-center mb-2">
@@ -3176,123 +3290,265 @@ const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, se
                  {language === 'ta' ? 'சுயவிவரத்தை மாற்றுக' : 'Edit Profile'}
                </h3>
                <button onClick={() => setIsEditing(false)} className="text-gray-400 underline text-[10px] font-bold">
-                 {language === 'ta' ? 'ரத்து' : 'Cancel'}
+                 {language === 'ta' ? 'ரத்துசெய்' : 'Cancel'}
                </button>
             </div>
-            
             <div className="space-y-4">
-              <div className="space-y-1">
-                <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{language === 'ta' ? 'பெயர்' : 'FullName'}</label>
-                <div className="relative">
-                  <UserIcon size={16} className="absolute left-3 top-3 text-gray-300" />
-                  <input 
-                    type="text" 
-                    className="w-full p-3 pl-10 bg-gray-50 border border-gray-100 rounded-2xl outline-primary font-bold text-sm"
-                    value={editForm.name}
-                    onChange={(e) => setEditForm({...editForm, name: e.target.value})}
-                  />
-                </div>
+              <div>
+                <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block mb-2">
+                  {language === 'ta' ? 'பெயர்' : 'Your Name'}
+                </label>
+                <input
+                  type="text"
+                  placeholder={language === 'ta' ? 'உங்கள் பெயர்' : 'Enter your name'}
+                  value={editForm.name}
+                  onChange={(e) => setEditForm({...editForm, name: e.target.value})}
+                  className="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl font-medium text-sm outline-primary"
+                />
               </div>
 
-              {/* Location Fields */}
-              <div className="space-y-4">
-                <div className="space-y-1">
-                  <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{language === 'ta' ? 'மாநிலம்' : 'State'}</label>
-                  <select 
-                    className="w-full p-3 bg-gray-50 border border-gray-100 rounded-2xl outline-primary font-bold text-sm"
-                    value={editForm.state}
-                    onChange={(e) => setEditForm({...editForm, state: e.target.value, district: '', subDistrict: '', location: ''})}
-                  >
-                    <option value="">Select State</option>
-                    {LOCATION_DATA.map(s => <option key={s.state} value={s.state}>{s.state}</option>)}
-                  </select>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{language === 'ta' ? 'மாவட்டம்' : 'District'}</label>
-                  <select 
-                    className="w-full p-3 bg-gray-50 border border-gray-100 rounded-2xl outline-primary font-bold text-sm disabled:opacity-50"
-                    disabled={!editForm.state}
-                    value={editForm.district}
-                    onChange={(e) => setEditForm({...editForm, district: e.target.value, subDistrict: '', location: ''})}
-                  >
-                    <option value="">Select District</option>
-                    {availableDistricts.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
-                  </select>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{language === 'ta' ? 'வட்டம்' : 'Sub-District'}</label>
-                  <select 
-                    className="w-full p-3 bg-gray-50 border border-gray-100 rounded-2xl outline-primary font-bold text-sm disabled:opacity-50"
-                    disabled={!editForm.district}
-                    value={editForm.subDistrict}
-                    onChange={(e) => {
-                      const nextSub = e.target.value;
-                      setEditForm({
-                        ...editForm,
-                        subDistrict: nextSub,
-                        location: nextSub ? `${nextSub}, ${editForm.district}` : ''
-                      });
-                    }}
-                  >
-                    <option value="">Select Area</option>
-                    {availableSubDistricts.map(sd => <option key={sd} value={sd}>{sd}</option>)}
-                  </select>
-                </div>
+              <div>
+                <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block mb-2">
+                  {language === 'ta' ? 'தொலைபேசி எண்' : 'Phone Number'}
+                </label>
+                <input
+                  type="tel"
+                  placeholder={language === 'ta' ? 'போன் எண்' : 'Enter phone number'}
+                  value={editForm.phone}
+                  onChange={(e) => setEditForm({...editForm, phone: e.target.value})}
+                  className="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl font-medium text-sm outline-primary"
+                />
               </div>
 
-              <div className="space-y-1">
-                <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{language === 'ta' ? 'தொலைபேசி' : 'Phone'}</label>
-                <div className="relative">
-                  <Phone size={16} className="absolute left-3 top-3 text-gray-300" />
-                  <input 
-                    type="tel" 
-                    placeholder="9876543210"
-                    className="w-full p-3 pl-10 bg-gray-50 border border-gray-100 rounded-2xl outline-primary font-bold text-sm"
-                    value={editForm.phone}
-                    onChange={(e) => setEditForm({...editForm, phone: e.target.value})}
-                  />
-                </div>
+              <div>
+                <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block mb-2">
+                  {language === 'ta' ? 'மாநிலம்' : 'State'}
+                </label>
+                <select
+                  value={editForm.state}
+                  onChange={(e) => setEditForm({ ...editForm, state: e.target.value, district: '', subDistrict: '' })}
+                  className="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl font-medium text-sm outline-primary"
+                >
+                  <option value="">{language === 'ta' ? 'மாநிலத்தைத் தேர்ந்தெடுக்கவும்' : 'Select State'}</option>
+                  {LOCATION_DATA.map(s => <option key={s.state} value={s.state}>{s.state}</option>)}
+                </select>
               </div>
 
-              <button 
-                onClick={handleSave}
-                disabled={isSaving}
-                className="w-full bg-primary text-white py-4 rounded-3xl font-black shadow-lg shadow-primary/20 uppercase tracking-widest text-sm flex items-center justify-center gap-2"
-              >
-                {isSaving ? (
-                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                ) : (
-                  <>
-                    <ShieldCheck size={18} />
-                    {language === 'ta' ? 'சேமிக்கவும்' : 'Save Profile'}
-                  </>
-                )}
-              </button>
+              <div>
+                <label className="text-[10px) font-black text-gray-400 uppercase tracking-widest block mb-2">
+                  {language === 'ta' ? 'மாவட்டம்' : 'District'}
+                </label>
+                <select
+                  value={editForm.district}
+                  onChange={(e) => setEditForm({ ...editForm, district: e.target.value, subDistrict: '' })}
+                  disabled={!editForm.state}
+                  className="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl font-medium text-sm outline-primary disabled:opacity-50"
+                >
+                  <option value="">{language === 'ta' ? 'மாவட்டத்தைத் தேர்ந்தெடுக்கவும்' : 'Select District'}</option>
+                  {availableDistricts.map(d => (
+                    <option key={d.name} value={d.name}>{d.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block mb-2">
+                  {language === 'ta' ? 'கிராமம் / பகுதி' : 'Village / Sub-District'}
+                </label>
+                <select
+                  value={editForm.subDistrict}
+                  onChange={(e) => setEditForm({...editForm, subDistrict: e.target.value})}
+                  disabled={!editForm.district}
+                  className="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl font-medium text-sm outline-primary disabled:opacity-50"
+                >
+                  <option value="">{language === 'ta' ? 'கிராமத்தைத் தேர்ந்தெடுக்கவும்' : 'Select Village'}</option>
+                  {availableSubDistricts.map(sd => (
+                    <option key={sd} value={sd}>{sd}</option>
+                  ))}
+                </select>
+              </div>
             </div>
+
+            <button 
+              onClick={handleSave}
+              disabled={isSaving || !editForm.name || !editForm.subDistrict}
+              className="w-full bg-primary text-white py-4 rounded-2xl font-black shadow-lg shadow-primary/20 uppercase tracking-widest text-xs flex items-center justify-center gap-2"
+            >
+              {isSaving ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : (language === 'ta' ? 'மாற்றங்களைச் சேமி' : 'Save Changes')}
+            </button>
           </div>
         ) : (
           <div className="space-y-6">
-            {/* Reviews Section */}
-            <div className="space-y-4">
-               <div className="flex justify-between items-center px-1">
-                 <h3 className="font-black text-gray-900 italic uppercase tracking-wider text-xs">
-                   {language === 'ta' ? 'மதிப்பாய்வுகள்' : 'Reviews'} 
-                   <span className="ml-2 text-gray-400 font-normal">({reviews.length})</span>
-                 </h3>
-                 {!isOwnProfile && !showReviewForm && (
-                   <button 
-                     onClick={() => setShowReviewForm(true)}
-                     className="text-primary font-black text-[10px] uppercase tracking-widest flex items-center gap-1 bg-primary/10 px-3 py-1.5 rounded-full"
-                   >
-                     <PlusCircle size={12} /> {language === 'ta' ? 'மதிப்பாய்வைச் சேர்' : 'Add Review'}
-                   </button>
-                 )}
-               </div>
+            {!isOwnProfile && (
+              <button 
+                onClick={() => onStartChatWithUser(targetUserId, profileData?.name || 'User')}
+                className="w-full bg-primary text-white py-4 rounded-[32px] font-black shadow-lg shadow-primary/20 uppercase tracking-[0.2em] text-[10px] flex items-center justify-center gap-2 active:scale-95 transition-transform"
+              >
+                <MessageSquare size={16} /> {language === 'ta' ? 'இப்போதே பேசுங்கள்' : 'Chat Now'}
+              </button>
+            )}
 
-               {showReviewForm && (
-                 <div className="bg-white p-5 rounded-[32px] border border-primary/20 shadow-xl space-y-4">
+            {isOwnProfile && (
+              <div className="space-y-3">
+                <div className="flex justify-between items-center px-1">
+                  <h3 className="font-black text-gray-900 italic">
+                    {language === 'ta' ? 'அமைப்புகள்' : 'Settings'}
+                  </h3>
+                  <button 
+                    onClick={() => setIsEditing(true)}
+                    className="text-primary font-black text-[10px] uppercase tracking-widest flex items-center gap-1"
+                  >
+                    <Pencil size={12} /> {language === 'ta' ? 'மாற்ற' : 'Edit'}
+                  </button>
+                </div>
+                <div className="bg-white rounded-[40px] border border-gray-100 shadow-sm overflow-hidden">
+                   <button 
+                      onClick={() => onNavigate('SellerDashboard')}
+                      className="w-full p-5 flex items-center justify-between hover:bg-gray-50 transition-colors border-b border-gray-50"
+                    >
+                      <div className="flex items-center gap-4">
+                        <div className="w-10 h-10 bg-primary/10 rounded-xl flex items-center justify-center text-primary">
+                          <BarChart2 size={20} />
+                        </div>
+                        <div className="text-left">
+                          <span className="text-sm font-black text-gray-900 block leading-none">
+                            {language === 'ta' ? 'விற்பனையாளர் பக்கம்' : 'Seller Dashboard'}
+                          </span>
+                          <span className="text-[10px] text-gray-400 font-bold uppercase tracking-tighter mt-1 block">My active listings</span>
+                        </div>
+                      </div>
+                      <ChevronRight size={18} className="text-gray-300" />
+                    </button>
+                  {[
+                    { icon: <MessageSquare size={20} />, label: language === 'ta' ? 'செய்திகள்' : 'Messages', id: 'chats', sub: language === 'ta' ? 'உரையாடல்கள்' : 'Alerts & news' },
+                    { icon: <Bookmark size={20} />, label: language === 'ta' ? 'சேமித்தவை' : 'Saved', id: 'saved', sub: 'Watchlist' },
+                    { icon: <Globe size={20} />, label: language === 'ta' ? 'மொழி / Language' : 'Language Selection', id: 'language', sub: languageNames[language] },
+                    { icon: <Star size={20} />, label: language === 'ta' ? 'மதிப்பாய்வுகள்' : 'Reviews', id: 'reviews', sub: language === 'ta' ? `${reviews.length} கருத்துக்கள்` : `My feedback & ratings (${reviews.length})` },
+                    { icon: <HelpCircle size={20} />, label: language === 'ta' ? 'உதவி' : 'Help center', id: 'help', sub: 'Contact support' },
+                  ].map((item, i, arr) => (
+                    <button 
+                      key={i} 
+                      onClick={() => {
+                        if (item.id === 'chats') onNavigate('ChatList');
+                        if (item.id === 'saved') onNavigate('Wishlist');
+                        if (item.id === 'reviews') {
+                          setShowReviewsView(true);
+                        }
+                        if (item.id === 'language') {
+                          const nextLang = languages[(languages.indexOf(language) + 1) % languages.length];
+                          setLanguage(nextLang);
+                          if (isOwnProfile && user?.uid) {
+                            const userRef = doc(db, 'users', user.uid);
+                            updateDoc(userRef, { language: nextLang }).catch(err => console.error("Error setting language in profile:", err));
+                          }
+                        }
+                      }}
+                      className={`w-full p-5 flex items-center justify-between hover:bg-gray-50 transition-colors ${i !== arr.length - 1 ? 'border-b border-gray-50' : ''}`}
+                    >
+                      <div className="flex items-center gap-4">
+                        <div className="w-10 h-10 bg-gray-50 border border-gray-100 rounded-xl flex items-center justify-center text-gray-400">
+                          {item.icon}
+                        </div>
+                        <div className="text-left">
+                          <span className="text-sm font-black text-gray-900 block leading-none">{item.label}</span>
+                          <span className="text-[10px] text-gray-400 font-bold uppercase tracking-tighter mt-1 block">{item.sub}</span>
+                        </div>
+                      </div>
+                      <ChevronRight size={18} className="text-gray-300" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {isOwnProfile && (
+              <button 
+                onClick={onLogout}
+                className="w-full p-5 bg-red-50 text-red-600 rounded-[40px] font-black uppercase tracking-[0.2em] text-[10px] shadow-sm shadow-red-100 flex items-center justify-center gap-2 active:scale-95 transition-transform"
+              >
+                <LogOut size={16} />
+                {language === 'ta' ? 'வெளியேறு' : 'Logout System'}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Reviews Sub-View Overlay */}
+      <AnimatePresence>
+        {showReviewsView && (
+          <>
+            {/* Backdrop for desktop viewport */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowReviewsView(false)}
+              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[140]"
+            />
+            <motion.div
+              initial={{ opacity: 0, y: 150 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 150 }}
+              className="fixed inset-y-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] bg-gray-50 z-[150] overflow-y-auto pb-10 shadow-2xl"
+            >
+              {/* Header */}
+              <div className="bg-primary text-white p-6 pt-10 shadow-lg flex items-center justify-between sticky top-0 z-50">
+                <div className="flex items-center gap-4">
+                  <button 
+                    onClick={() => setShowReviewsView(false)} 
+                    className="bg-white/20 p-2 rounded-full backdrop-blur-sm hover:bg-white/30 transition-colors"
+                  >
+                    <ChevronLeft size={24} />
+                  </button>
+                  <div>
+                    <h1 className="text-xl font-black tracking-tight">
+                      {language === 'ta' ? 'மதிப்பாய்வுகள்' : 'Reviews & Ratings'}
+                    </h1>
+                    <p className="text-xs opacity-90 font-medium font-sans">
+                      {language === 'ta' ? `${reviews.length} கருத்துக்கள்` : `${reviews.length} total reviews`}
+                    </p>
+                  </div>
+                </div>
+                
+                {!isOwnProfile && !showReviewForm && (
+                  <button 
+                    onClick={() => setShowReviewForm(true)}
+                    className="text-white hover:bg-white/20 font-black text-xs uppercase tracking-wider flex items-center gap-1 bg-white/10 px-3 py-2 rounded-xl"
+                  >
+                    <PlusCircle size={14} /> 
+                    <span>{language === 'ta' ? 'அமை' : 'Add'}</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Body */}
+              <div className="p-4 space-y-6">
+                {/* Average Rating Box */}
+                <div className="bg-white p-6 rounded-[32px] border border-gray-100 shadow-sm flex flex-col items-center justify-center text-center">
+                  <div className="text-4xl font-black text-gray-900 leading-none mb-2 font-sans">
+                    {averageRating}
+                  </div>
+                  <div className="flex text-yellow-500 gap-1 mb-2">
+                    {[...Array(5)].map((_, i) => {
+                      const ratingVal = parseFloat(averageRating);
+                      return (
+                        <Star 
+                          key={i} 
+                          size={20} 
+                          fill={i < Math.round(ratingVal) ? 'currentColor' : 'none'} 
+                          className={i < Math.round(ratingVal) ? 'text-yellow-500' : 'text-gray-200'} 
+                        />
+                      );
+                    })}
+                  </div>
+                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                    {language === 'ta' ? 'சராசரி மதிப்பீடு' : 'Average Rating'}
+                  </p>
+                </div>
+
+                {showReviewForm && (
+                  <div className="bg-white p-5 rounded-[32px] border border-primary/20 shadow-xl space-y-4">
                     <div className="flex justify-between items-center">
                       <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Rate your experience</span>
                       <button onClick={() => setShowReviewForm(false)} className="text-gray-400"><X size={16} /></button>
@@ -3321,128 +3577,56 @@ const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, se
                     >
                       {isSubmittingReview ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : 'Submit Review'}
                     </button>
-                 </div>
-               )}
+                  </div>
+                )}
 
-               {reviews.length === 0 ? (
-                 <div className="bg-white p-8 rounded-[32px] border border-dashed border-gray-200 text-center">
-                    <p className="text-xs text-gray-400 font-bold uppercase tracking-widest">No reviews yet</p>
-                 </div>
-               ) : (
-                 <div className="space-y-3">
+                {reviews.length === 0 ? (
+                  <div className="bg-white p-8 rounded-[32px] border border-dashed border-gray-200 text-center">
+                     <p className="text-xs text-gray-400 font-bold uppercase tracking-widest">No reviews yet</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
                     {reviews.map(r => (
                       <div key={r.id} className="bg-white p-4 rounded-[32px] border border-gray-100 shadow-sm space-y-2">
                         <div className="flex justify-between items-start">
-                          <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => {
+                              if (r.fromUserId) {
+                                onNavigate('Profile', r.fromUserId);
+                                setShowReviewsView(false);
+                              }
+                            }}
+                            className="flex items-center gap-2 text-left hover:opacity-80 active:scale-[0.98] transition-all focus:outline-none"
+                          >
                             <div className="w-8 h-8 bg-primary/10 rounded-xl flex items-center justify-center font-black text-primary text-xs uppercase">
                               {r.fromUserName?.charAt(0) || 'U'}
                             </div>
-                            <span className="text-xs font-black text-gray-900">{r.fromUserName}</span>
-                          </div>
+                            <span className="text-xs font-black text-gray-900 border-b border-dashed border-gray-300">{r.fromUserName}</span>
+                          </button>
                           <div className="flex text-yellow-500">
                             {[...Array(5)].map((_, i) => (
                               <Star key={i} size={12} fill={i < r.rating ? 'currentColor' : 'none'} className={i < r.rating ? 'text-yellow-500' : 'text-gray-200'} />
                             ))}
                           </div>
                         </div>
-                        {r.comment && <p className="text-xs text-gray-600 leading-relaxed font-medium">{r.comment}</p>}
-                        <p className="text-[9px] text-gray-400 font-black uppercase tracking-[0.2em] mt-1">
+                        {r.comment && <p className="text-xs text-gray-650 leading-relaxed font-semibold">{r.comment}</p>}
+                        <p className="text-[9px] text-gray-400 font-black uppercase tracking-[0.2em] mt-1 font-sans">
                           {new Date(r.createdAt?.toDate?.() || r.createdAt).toLocaleDateString()}
                         </p>
                       </div>
                     ))}
-                 </div>
-               )}
-            </div>
-
-            {isOwnProfile && (
-              <div className="space-y-3">
-                <div className="flex justify-between items-center px-1">
-                  <h3 className="font-black text-gray-900 italic">
-                    {language === 'ta' ? 'அமைப்புகள்' : 'Settings'}
-                  </h3>
-                  <button 
-                    onClick={() => setIsEditing(true)}
-                    className="text-primary font-black text-[10px] uppercase tracking-widest flex items-center gap-1"
-                  >
-                    <Pencil size={12} /> {language === 'ta' ? 'மாற்ற' : 'Edit'}
-                  </button>
-                </div>
-                <div className="bg-white rounded-[40px] border border-gray-100 shadow-sm overflow-hidden">
-
-                   <button 
-                      onClick={() => onNavigate('SellerDashboard')}
-                      className="w-full p-5 flex items-center justify-between hover:bg-gray-50 transition-colors border-b border-gray-50"
-                    >
-                      <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 bg-primary/10 rounded-xl flex items-center justify-center text-primary">
-                          <BarChart2 size={20} />
-                        </div>
-                        <div className="text-left">
-                          <span className="text-sm font-black text-gray-900 block leading-none">
-                            {language === 'ta' ? 'விற்பனையாளர் பக்கம்' : 'Seller Dashboard'}
-                          </span>
-                          <span className="text-[10px] text-gray-400 font-bold uppercase tracking-tighter mt-1 block">My active listings</span>
-                        </div>
-                      </div>
-                      <ChevronRight size={18} className="text-gray-300" />
-                    </button>
-                  {[
-                    { icon: <MessageSquare size={20} />, label: language === 'ta' ? 'செய்திகள்' : 'Messages', id: 'chats', sub: language === 'ta' ? 'உரையாடல்கள்' : 'Alerts & news' },
-                    { icon: <Bookmark size={20} />, label: language === 'ta' ? 'சேமித்தவை' : 'Saved', id: 'saved', sub: 'Watchlist' },
-                    { icon: <Globe size={20} />, label: language === 'ta' ? 'மொழி / Language' : 'Language Selection', id: 'language', sub: languageNames[language] },
-                    { icon: <HelpCircle size={20} />, label: language === 'ta' ? 'உதவி' : 'Help center', id: 'help', sub: 'Contact support' },
-                  ].map((item, i, arr) => (
-                    <button 
-                      key={i} 
-                      onClick={() => {
-                        if (item.id === 'chats') onNavigate('ChatList');
-                        if (item.id === 'saved') onNavigate('Wishlist');
-                        if (item.id === 'language') {
-                          const nextLang = languages[(languages.indexOf(language) + 1) % languages.length];
-                          setLanguage(nextLang);
-                          if (isOwnProfile && user?.uid) {
-                            const userRef = doc(db, 'users', user.uid);
-                            updateDoc(userRef, { language: nextLang }).catch(err => console.error("Error setting language in profile:", err));
-                          }
-                        }
-                      }}
-                      className={`w-full p-5 flex items-center justify-between hover:bg-gray-50 transition-colors ${i !== arr.length - 1 ? 'border-b border-gray-50' : ''}`}
-                    >
-                      <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 bg-gray-50 border border-gray-100 rounded-xl flex items-center justify-center text-gray-400">
-                          {item.icon}
-                        </div>
-                        <div className="text-left">
-                          <span className="text-sm font-black text-gray-900 block leading-none">{item.label}</span>
-                          <span className="text-[10px] text-gray-400 font-bold uppercase tracking-tighter mt-1 block">{item.sub}</span>
-                        </div>
-                      </div>
-                      <ChevronRight size={18} className="text-gray-300" />
-                    </button>
-                  ))}
-                </div>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            </motion.div>
+          </>
         )}
-
-        {isOwnProfile && !isEditing && (
-          <button 
-            onClick={onLogout}
-            className="w-full p-5 bg-red-50 text-red-600 rounded-[40px] font-black uppercase tracking-[0.2em] text-[10px] shadow-sm shadow-red-100 flex items-center justify-center gap-2 active:scale-95 transition-transform"
-          >
-            <LogOut size={16} />
-            {language === 'ta' ? 'வெளியேறு' : 'Logout System'}
-          </button>
-        )}
-      </div>
+      </AnimatePresence>
     </div>
   );
 };
 
-const SearchScreen = ({ 
-  onBack, 
+const SearchScreen = ({   onBack, 
   onNavigate, 
   query, 
   language, 
@@ -3612,6 +3796,19 @@ const SearchScreen = ({
                    <div className="flex items-center gap-1 text-[9px] font-black text-gray-400 uppercase tracking-tighter">
                      <MapPin size={10} /> {listing.location}
                    </div>
+                   <button 
+                     onClick={(e) => {
+                       e.stopPropagation();
+                       if (listing.farmerId) {
+                         onNavigate('Profile', listing.farmerId);
+                       }
+                     }}
+                     className="text-[9px] font-black text-primary hover:underline flex items-center gap-1 leading-none truncate cursor-pointer text-left mt-1 focus:outline-none"
+                   >
+                     <span className="truncate">
+                       <UserName userId={listing.farmerId} fallback={listing.farmerName} />
+                     </span>
+                   </button>
                    <p className="text-[8px] text-gray-400 font-bold mt-1">2 hours ago</p>
                 </div>
               </motion.div>
@@ -4044,9 +4241,130 @@ const ChatListScreen = ({ conversations, onNavigate, onBack, language }: { conve
   );
 };
 
+const VoiceMessagePlayer = ({ audioUrl, isOwn, language }: { audioUrl: string, isOwn: boolean, language: 'ta' | 'en' }) => {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const progressBarRef = useRef<HTMLDivElement | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const handleTimeUpdate = () => {
+      setCurrentTime(audio.currentTime);
+    };
+
+    const handleLoadedMetadata = () => {
+      setDuration(audio.duration || 0);
+    };
+
+    const handleEnded = () => {
+      setIsPlaying(false);
+      setCurrentTime(0);
+    };
+
+    audio.addEventListener('timeupdate', handleTimeUpdate);
+    audio.addEventListener('loadedmetadata', handleLoadedMetadata);
+    audio.addEventListener('ended', handleEnded);
+
+    // Initial check in case it loaded extremely fast
+    if (audio.duration) {
+      setDuration(audio.duration);
+    }
+
+    return () => {
+      audio.removeEventListener('timeupdate', handleTimeUpdate);
+      audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      audio.removeEventListener('ended', handleEnded);
+    };
+  }, [audioUrl]);
+
+  const togglePlay = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (isPlaying) {
+      audio.pause();
+      setIsPlaying(false);
+    } else {
+      audio.play().then(() => {
+        setIsPlaying(true);
+      }).catch(err => {
+        console.warn("Audio play failed:", err);
+      });
+    }
+  };
+
+  const handleProgressClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const audio = audioRef.current;
+    const progressContainer = progressBarRef.current;
+    if (!audio || !progressContainer || duration === 0) return;
+
+    const rect = progressContainer.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const width = rect.width;
+    const newTime = (clickX / width) * duration;
+    
+    audio.currentTime = newTime;
+    setCurrentTime(newTime);
+  };
+
+  const formatTime = (time: number) => {
+    const mins = Math.floor(time / 60);
+    const secs = Math.floor(time % 60);
+    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+  };
+
+  const percentage = duration > 0 ? (currentTime / duration) * 100 : 0;
+
+  return (
+    <div className="flex items-center gap-3 py-1 font-sans min-w-[200px] sm:min-w-[240px]">
+      <audio ref={audioRef} src={audioUrl} preload="metadata" />
+      <button 
+        type="button"
+        onClick={togglePlay}
+        className={`w-9 h-9 rounded-full flex items-center justify-center transition-transform shrink-0 active:scale-90 ${
+          isOwn 
+            ? 'bg-white text-primary hover:bg-gray-50' 
+            : 'bg-primary text-white hover:bg-primary/95'
+        }`}
+      >
+        {isPlaying ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" className="ml-0.5" />}
+      </button>
+      
+      <div className="flex-1 space-y-1">
+        {/* Progress Bar Container */}
+        <div 
+          ref={progressBarRef}
+          onClick={handleProgressClick}
+          className={`h-2 rounded-full relative cursor-pointer ${
+            isOwn ? 'bg-white/20' : 'bg-gray-200'
+          }`}
+        >
+          <div 
+            className={`h-full rounded-full transition-all duration-100 ${
+              isOwn ? 'bg-white' : 'bg-primary'
+            }`}
+            style={{ width: `${percentage}%` }}
+          />
+        </div>
+        
+        {/* Timers */}
+        <div className={`flex justify-between text-[10px] font-extrabold ${
+          isOwn ? 'text-white/80' : 'text-gray-500'
+        }`}>
+          <span>{formatTime(currentTime)}</span>
+          <span>{duration > 0 ? formatTime(duration) : '0:00'}</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const ChatRoomScreen = ({ conversation, onSendMessage, onBack, onViewProfile, language }: { 
   conversation: Conversation, 
-  onSendMessage: (text: string) => void,
+  onSendMessage: (text: string, audioUrl?: string) => void,
   onBack: () => void,
   onViewProfile?: (userId: string) => void,
   language: 'ta' | 'en'
@@ -4065,6 +4383,118 @@ const ChatRoomScreen = ({ conversation, onSendMessage, onBack, onViewProfile, la
   
   const headerMenuRef = useRef<HTMLDivElement>(null);
   const messageMenuRef = useRef<HTMLDivElement>(null);
+
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const [voiceSupported, setVoiceSupported] = useState(true);
+  
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<any>(null);
+
+  // Clean up recording timers on unmount
+  useEffect(() => {
+    return () => {
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+      }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
+    };
+  }, []);
+
+  const startRecording = async () => {
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        alert(language === 'ta' ? 'குரல் பதிவை உங்கள் உலாவி ஆதரிக்கவில்லை' : 'Audio recording is not supported by your browser or device.');
+        setVoiceSupported(false);
+        return;
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunksRef.current = [];
+      
+      let options = {};
+      if (MediaRecorder.isTypeSupported('audio/webm')) {
+        options = { mimeType: 'audio/webm' };
+      } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+        options = { mimeType: 'audio/mp4' };
+      }
+      
+      const recorder = new MediaRecorder(stream, options);
+      
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+      
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(track => track.stop());
+        
+        const audioBlob = new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+        // Send actual audio webm only if recording completes successfully
+        if (audioBlob.size > 0 && mediaRecorderRef.current) {
+          const reader = new FileReader();
+          reader.readAsDataURL(audioBlob);
+          reader.onloadend = () => {
+            const base64data = reader.result as string;
+            onSendMessage(language === 'ta' ? '🎤 குரல் செய்தி' : '🎤 Voice message', base64data);
+          };
+        }
+        setIsRecording(false);
+        setRecordingTime(0);
+      };
+      
+      mediaRecorderRef.current = recorder;
+      recorder.start(250);
+      setIsRecording(true);
+      setRecordingTime(0);
+      
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingTime(prev => {
+          if (prev >= 30) {
+            stopRecording();
+            return 30;
+          }
+          return prev + 1;
+        });
+      }, 1000);
+      
+    } catch (err) {
+      console.error("Microphone access err:", err);
+      alert(language === 'ta' ? 'மைக் அணுகல் மறுக்கப்பட்டது. அமைப்புகளில் மைக் அனுமதியை இயக்கவும்.' : 'Microphone access denied. Please enable microphone permissions in settings.');
+    }
+  };
+
+  const stopRecording = () => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+  };
+
+  const cancelRecording = () => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      // Discard by removing ref so recorder.onstop skipped posting
+      mediaRecorderRef.current = null;
+      setIsRecording(false);
+      setRecordingTime(0);
+    } else {
+      setIsRecording(false);
+      setRecordingTime(0);
+    }
+  };
 
   // Clear typing status on unmount
   useEffect(() => {
@@ -4585,7 +5015,11 @@ const ChatRoomScreen = ({ conversation, onSendMessage, onBack, onViewProfile, la
                         ? 'bg-primary text-white rounded-[24px] rounded-br-none' 
                         : 'bg-gray-100 text-gray-800 rounded-[24px] rounded-bl-none border border-gray-200'
                     }`}>
-                      {msg.text}
+                      {msg.audioUrl ? (
+                        <VoiceMessagePlayer audioUrl={msg.audioUrl} isOwn={isOwn} language={language} />
+                      ) : (
+                        msg.text
+                      )}
                       <div className={`text-[10px] mt-1 opacity-70 flex items-center gap-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
                         {formatMessageTime(msg)}
                         {isOwn && (
@@ -4655,26 +5089,80 @@ const ChatRoomScreen = ({ conversation, onSendMessage, onBack, onViewProfile, la
       </div>
 
       <div className="p-4 border-t border-gray-100 bg-white/100 backdrop-blur-xl sticky bottom-0 z-50">
-        <div className="flex items-center gap-2 bg-gray-50 p-2 rounded-[28px] border-2 border-gray-100 focus-within:border-primary focus-within:bg-white transition-all shadow-inner">
-          <input 
-            type="text"
-            placeholder={language === 'ta' ? 'செய்தி...' : 'Type a message...'}
-            className="flex-1 bg-transparent px-4 py-2 outline-none text-sm font-bold placeholder:text-gray-400"
-            value={inputText}
-            onChange={(e) => {
-              isUserTyping.current = true;
-              setInputText(e.target.value);
-            }}
-            onKeyPress={(e) => e.key === 'Enter' && send()}
-          />
-          <button 
-            onClick={send}
-            disabled={!inputText.trim()}
-            className="w-10 h-10 bg-primary text-white rounded-[20px] flex items-center justify-center shadow-lg shadow-primary/20 disabled:grayscale disabled:opacity-50 active:scale-95 transition-transform"
-          >
-            <ChevronRight size={20} />
-          </button>
-        </div>
+        {isRecording ? (
+          <div className="flex items-center gap-2 bg-red-50/50 p-2 rounded-[28px] border-2 border-red-200 transition-all shadow-inner">
+            <button 
+              type="button"
+              onClick={cancelRecording}
+              className="w-10 h-10 shrink-0 bg-red-100 text-red-600 rounded-[20px] flex items-center justify-center hover:bg-red-200 transition-colors active:scale-95"
+              title={language === 'ta' ? 'அழி' : 'Discard'}
+            >
+              <Trash size={16} />
+            </button>
+            
+            <div className="flex-1 flex items-center gap-3 px-2">
+              <span className="relative flex h-3 w-3">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+              </span>
+              <span className="text-xs font-black text-red-600 uppercase tracking-widest leading-none hidden sm:inline">
+                {language === 'ta' ? 'பதிவாகிறது...' : 'Recording...'}
+              </span>
+              
+              {/* Animating mini audio bars for recording feedback */}
+              <div className="flex items-end gap-0.5 h-3">
+                <div className="w-0.5 bg-red-500 rounded-full animate-bounce h-2" style={{ animationDelay: '0ms' }} />
+                <div className="w-0.5 bg-red-500 rounded-full animate-bounce h-3" style={{ animationDelay: '150ms' }} />
+                <div className="w-0.5 bg-red-500 rounded-full animate-bounce h-1.5" style={{ animationDelay: '300ms' }} />
+                <div className="w-0.5 bg-red-500 rounded-full animate-bounce h-2.5" style={{ animationDelay: '450ms' }} />
+              </div>
+              
+              <span className="ml-auto font-mono text-xs font-black text-red-600/90 leading-none">
+                {`0:${recordingTime < 10 ? '0' : ''}${recordingTime} / 0:30`}
+              </span>
+            </div>
+
+            <button 
+              type="button"
+              onClick={stopRecording}
+              className="w-10 h-10 shrink-0 bg-green-500 text-white rounded-[20px] flex items-center justify-center shadow-lg shadow-green-500/20 active:scale-95 transition-transform"
+              title={language === 'ta' ? 'அனுப்பு' : 'Send'}
+            >
+              <Check size={20} />
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 bg-gray-50 p-2 rounded-[28px] border-2 border-gray-100 focus-within:border-primary focus-within:bg-white transition-all shadow-inner">
+            {voiceSupported && (
+              <button 
+                type="button"
+                onClick={startRecording}
+                className="w-10 h-10 shrink-0 bg-primary/10 text-primary rounded-[20px] flex items-center justify-center hover:bg-primary/20 transition-all active:scale-95"
+                title={language === 'ta' ? 'குரல் பதிவு' : 'Record voice'}
+              >
+                <Mic size={18} />
+              </button>
+            )}
+            <input 
+              type="text"
+              placeholder={language === 'ta' ? 'செய்தி...' : 'Type a message...'}
+              className="flex-1 bg-transparent px-4 py-2 outline-none text-sm font-bold placeholder:text-gray-400"
+              value={inputText}
+              onChange={(e) => {
+                isUserTyping.current = true;
+                setInputText(e.target.value);
+              }}
+              onKeyPress={(e) => e.key === 'Enter' && send()}
+            />
+            <button 
+              onClick={send}
+              disabled={!inputText.trim()}
+              className="w-10 h-10 shrink-0 bg-primary text-white rounded-[20px] flex items-center justify-center shadow-lg shadow-primary/20 disabled:grayscale disabled:opacity-50 active:scale-95 transition-transform"
+            >
+              <ChevronRight size={20} />
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -63,6 +63,7 @@ export interface Message {
   id: string;
   senderId: string;
   text: string;
+  audioUrl?: string;
   timestamp: string;
   isRead: boolean;
   isDelivered?: boolean;

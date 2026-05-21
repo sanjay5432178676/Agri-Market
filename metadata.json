@@ -1,6 +1,6 @@
 {
   "name": "AgriMarket",
   "description": "A comprehensive mobile-friendly farming marketplace app for farmers, supporting multi-level location selection, real-time chat with double-tick read receipts, and Tamil/English language support.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
