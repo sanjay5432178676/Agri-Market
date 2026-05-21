@@ -24,6 +24,7 @@ service cloud.firestore {
       allow read: if isSignedIn();
       // Allow user to manage their own profile
       allow write: if isOwner(userId);
+      allow create, update, delete: if isOwner(userId);
       
       // Allow others to update aggregate rating/reviewCount when they leave a review
       allow update: if isSignedIn() && 

@@ -186,73 +186,80 @@ const App = () => {
     if (!isLoggedIn || !auth.currentUser) return;
 
     const userRef = doc(db, 'users', auth.currentUser.uid);
-    const unsubscribeUser = onSnapshot(userRef, (docSnap) => {
-      if (!docSnap.exists()) {
-        const initialData = {
+    let unsubscribeUser: (() => void) | null = null;
+    let isTerminated = false;
+
+    // 1. Set up real-time sync listener (purely read operations)
+    unsubscribeUser = onSnapshot(userRef, (snap) => {
+      if (isTerminated) return;
+
+      if (!snap.exists()) {
+        const initialLocalData = {
           uid: auth.currentUser!.uid,
-          name: '',
+          name: auth.currentUser!.displayName || '',
           isVerified: false,
           location: '',
           district: '',
           subDistrict: '',
           state: 'Tamil Nadu',
           photoEmoji: '👨‍🌾',
-          phone: '',
-          memberSince: new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
+          phone: auth.currentUser!.phoneNumber || '',
+          memberSince: new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
         };
-        setDoc(userRef, initialData).catch(err => handleFirestoreError(err, OperationType.CREATE, 'users'));
-        setUser(initialData);
+        setUser(initialLocalData);
         setCurrentScreen('Onboarding');
         setLoading(false);
-      } else {
-        const data = docSnap.data();
-        const userData = { uid: auth.currentUser!.uid, ...data };
-        setUser(userData);
-        
-        // Sync local language state via user profile
-        if (data.language && data.language !== language) {
-          setLanguage(data.language);
-        }
-        
-        if (data.subDistrict && lastProfileSubDistrictRef.current !== data.subDistrict) {
-          setActiveSubDistrict(data.subDistrict);
-          lastProfileSubDistrictRef.current = data.subDistrict;
-        }
-        
-        // Completeness check - ensure all required profile fields are present
-        const isProfileComplete = !!(data.name && data.state && data.district && data.subDistrict);
-        
-        setCurrentScreen(prev => {
-          // If already inside the application (dashboard/home/etc), stay there.
-          // This prevents flickering or being kicked back to onboarding if Firestore data lags.
-          const protectedScreens: AppScreen[] = [
-            'Home', 'SellerDashboard', 'Detail', 'Search', 'Profile', 
-            'Orders', 'Chat', 'Analytics', 'ProductForm', 
-            'ManageListings', 'Negotiations'
-          ];
-          
-          if (protectedScreens.includes(prev as any)) {
-            return prev;
-          }
-
-          if (!isProfileComplete) return 'Onboarding';
-          
-          // If we are on a setup/auth screen, transition to the correct dashboard
-          if (prev === 'Login' || prev === 'Onboarding' || prev === 'RoleSelection') {
-            return pendingRole === 'sell' ? 'SellerDashboard' : 'Home';
-          }
-          return prev;
-        });
-        setLoading(false);
+        return;
       }
+
+      const data = snap.data();
+      const userData = { uid: auth.currentUser!.uid, ...data };
+      setUser(userData);
+      
+      // Sync local language state via user profile
+      if (data.language && data.language !== language) {
+        setLanguage(data.language);
+      }
+      
+      if (data.subDistrict && lastProfileSubDistrictRef.current !== data.subDistrict) {
+        setActiveSubDistrict(data.subDistrict);
+        lastProfileSubDistrictRef.current = data.subDistrict;
+      }
+      
+      // Completeness check - ensure all required profile fields are present
+      const isProfileComplete = !!(data.name && data.state && data.district && data.subDistrict && data.phone);
+      
+      setCurrentScreen(prev => {
+        const protectedScreens: AppScreen[] = [
+          'Home', 'SellerDashboard', 'Detail', 'Search', 'Profile', 
+          'Orders', 'Chat', 'Analytics', 'ProductForm', 
+          'ManageListings', 'Negotiations'
+        ];
+        
+        if (protectedScreens.includes(prev as any)) {
+          return prev;
+        }
+
+        if (!isProfileComplete) return 'Onboarding';
+        
+        // If we are on a setup/auth screen, transition to the correct dashboard
+        if (prev === 'Login' || prev === 'Onboarding' || prev === 'RoleSelection') {
+          return pendingRole === 'sell' ? 'SellerDashboard' : 'Home';
+        }
+        return prev;
+      });
+      setLoading(false);
     }, (err) => {
       console.error("User profile sync error:", err);
-      setLoading(false);
+      if (!isTerminated) setLoading(false);
     });
 
-    return () => unsubscribeUser();
+    return () => {
+      isTerminated = true;
+      if (unsubscribeUser) {
+        unsubscribeUser();
+      }
+    };
   }, [isLoggedIn, pendingRole, language]); 
 
 
@@ -876,6 +883,9 @@ const App = () => {
               user={user} 
               language={language} 
               setLanguage={setLanguage}
+              onComplete={() => {
+                setCurrentScreen(pendingRole === 'sell' ? 'SellerDashboard' : 'Home');
+              }}
             />
           )}
           {currentScreen === 'Search' && (
@@ -1251,8 +1261,8 @@ const HomeScreen = ({
     return mapping[name] || name;
   };
 
-  const profileSubDistrict = user?.subDistrict || (user?.location ? user.location.split(',')[0].trim() : '') || 'Gobichettipalayam';
-  const profileSubDistrictLabel = getSubDistrictLabel(profileSubDistrict, language);
+  const currentSubDistrictDisplay = activeSubDistrict || user?.subDistrict || 'Gobichettipalayam';
+  const currentSubDistrictDisplayLabel = getSubDistrictLabel(currentSubDistrictDisplay, language);
 
   const subDistrictName = activeSubDistrict || user?.subDistrict || (language === 'ta' ? 'அனைத்தும்' : 'Select Location');
 
@@ -1260,7 +1270,7 @@ const HomeScreen = ({
     <div id="home-screen">
       <SectionHeader 
         title={language === 'ta' ? 'அக்ரி மார்க்கெட்' : 'AgriMarket'} 
-        subtitle={language === 'ta' ? `விவசாய சந்தை - ${profileSubDistrictLabel}` : `Agri Market - ${profileSubDistrict}`} 
+        subtitle={language === 'ta' ? `விவசாய சந்தை - ${currentSubDistrictDisplayLabel}` : `Agri Market - ${currentSubDistrictDisplay}`} 
         onNotify={() => onNavigate('Notifications')}
         onWishlist={() => onNavigate('Wishlist')}
         wishlistCount={wishlist.length}
@@ -3006,6 +3016,7 @@ const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, se
         location: finalLocation,
         district: editForm.district,
         subDistrict: editForm.subDistrict,
+        phone: editForm.phone,
         updatedAt: serverTimestamp()
       }));
       
@@ -3364,8 +3375,12 @@ const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, se
                         if (item.id === 'chats') onNavigate('ChatList');
                         if (item.id === 'saved') onNavigate('Wishlist');
                         if (item.id === 'language') {
-                          const nextIdx = (languages.indexOf(language) + 1) % languages.length;
-                          setLanguage(languages[nextIdx]);
+                          const nextLang = languages[(languages.indexOf(language) + 1) % languages.length];
+                          setLanguage(nextLang);
+                          if (isOwnProfile && user?.uid) {
+                            const userRef = doc(db, 'users', user.uid);
+                            updateDoc(userRef, { language: nextLang }).catch(err => console.error("Error setting language in profile:", err));
+                          }
                         }
                       }}
                       className={`w-full p-5 flex items-center justify-between hover:bg-gray-50 transition-colors ${i !== arr.length - 1 ? 'border-b border-gray-50' : ''}`}
@@ -3728,12 +3743,6 @@ const ChatListScreen = ({ conversations, onNavigate, onBack, language }: { conve
         [`archivedUsers.${uid}`]: !isArch
       });
       setActiveMenuId(null);
-      // Automatically switch tab to take the user to relevant tab
-      if (!isArch) {
-        setActiveTab('archived');
-      } else {
-        setActiveTab('active');
-      }
     } catch (e) {
       console.error("Error toggling archive:", e);
     }
@@ -3856,6 +3865,8 @@ const ChatListScreen = ({ conversations, onNavigate, onBack, language }: { conve
                 whileTap={{ scale: 0.98 }}
                 onClick={() => onNavigate('ChatRoom', convo)}
                 className={`bg-white p-4 rounded-[32px] border shadow-sm flex items-center gap-4 relative ${
+                  activeMenuId === convo.id ? 'z-30 shadow-md' : 'z-10'
+                } ${
                   isStarred ? 'border-amber-200 bg-amber-50/20' : 'border-gray-100'
                 }`}
               >
@@ -4437,13 +4448,40 @@ const ChatRoomScreen = ({ conversation, onSendMessage, onBack, language }: {
                     </span>
                   </button>
 
+                  {/* Archive option inside Room */}
+                  <button 
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      if (!auth.currentUser) return;
+                      const uid = auth.currentUser.uid;
+                      const isArch = conversation.archivedUsers?.[uid] || false;
+                      try {
+                        await updateDoc(doc(db, 'conversations', conversation.id), {
+                          [`archivedUsers.${uid}`]: !isArch
+                        });
+                        setHeaderMenuOpen(false);
+                        onBack();
+                      } catch (err) {
+                        console.error("Error toggling archive in room:", err);
+                      }
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-gray-50 text-left transition-colors border-t border-gray-100/60 mt-0.5"
+                  >
+                    <Archive size={16} className="text-gray-400" />
+                    <span>
+                      {conversation.archivedUsers?.[auth.currentUser?.uid || '']
+                        ? (language === 'ta' ? 'மீட்டமை' : 'Unarchive')
+                        : (language === 'ta' ? 'காப்பகப்படுத்து' : 'Archive')}
+                    </span>
+                  </button>
+
                   {/* Delete option inside Room */}
                   <button 
                     onClick={(e) => {
                       e.stopPropagation();
                       setConfirmHeaderDelete(true);
                     }}
-                    className="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-red-50 text-red-600 text-left transition-colors border-t border-gray-100/60 mt-0.5"
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-red-50 text-red-650 text-left transition-colors border-t border-gray-100/60 mt-0.5"
                   >
                     <Trash size={16} />
                     <span>{language === 'ta' ? 'அழிக்கவும்' : 'Delete Chat'}</span>
@@ -4484,7 +4522,9 @@ const ChatRoomScreen = ({ conversation, onSendMessage, onBack, language }: {
                   </div>
                 )}
                 
-                <div className={`flex items-end gap-2 relative group ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
+                <div className={`flex items-end gap-2 relative group ${
+                  activeMessageMenuId === msg.id ? 'z-30' : 'z-10'
+                } ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
                   <motion.div 
                     initial={{ opacity: 0, scale: 0.95, y: 10 }}
                     animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -4549,7 +4589,7 @@ const ChatRoomScreen = ({ conversation, onSendMessage, onBack, language }: {
                               handleDeleteMessage(msg.id);
                               setActiveMessageMenuId(null);
                             }}
-                            className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-lg hover:bg-red-50 text-red-600 text-left transition-colors border-t border-gray-50/60 mt-0.5"
+                            className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-lg hover:bg-red-50 text-red-600 text-left transition-colors border-t border-gray-50/65 mt-0.5"
                           >
                             <Trash size={12} />
                             <span>{language === 'ta' ? 'அழி' : 'Delete'}</span>
@@ -4760,25 +4800,31 @@ const RoleSelectionScreen = ({ onSelect, language }: any) => {
   );
 };
 
-const OnboardingScreen = ({ user, language, setLanguage }: any) => {
+const OnboardingScreen = ({ user, language, setLanguage, onComplete }: any) => {
   const [step, setStep] = useState(1);
   const [formData, setFormData] = useState({
     name: user?.name && user.name !== 'Farmer' ? user.name : '',
-    state: user?.state || '',
+    state: user?.state || 'Tamil Nadu',
     district: user?.district || '',
     subDistrict: user?.subDistrict || '',
-    prefLanguage: user?.language || language
+    prefLanguage: user?.language || language,
+    phone: user?.phone || auth.currentUser?.phoneNumber || ''
   });
   const [isSaving, setIsSaving] = useState(false);
 
   // Initial step calculation on mount
   useEffect(() => {
     if (user) {
-      if (user.language) {
+      if (!user.language) {
+        setStep(1);
+      } else if (!user.name || user.name === 'Farmer') {
         setStep(2);
-        if (user.name && user.name !== 'Farmer' && user.state) {
-          setStep(3);
-        }
+      } else if (!user.state || !user.district || !user.subDistrict) {
+        setStep(3);
+      } else if (!user.phone) {
+        setStep(4);
+      } else {
+        setStep(1);
       }
     }
   }, []);
@@ -4789,10 +4835,11 @@ const OnboardingScreen = ({ user, language, setLanguage }: any) => {
       setFormData(prev => ({
         ...prev,
         name: prev.name || ((user.name && user.name !== 'Farmer') ? user.name : ''),
-        state: prev.state || user.state || '',
+        state: prev.state || user.state || 'Tamil Nadu',
         district: prev.district || user.district || '',
         subDistrict: prev.subDistrict || user.subDistrict || '',
-        prefLanguage: prev.prefLanguage || user.language || language
+        prefLanguage: prev.prefLanguage || user.language || language,
+        phone: prev.phone || user.phone || auth.currentUser?.phoneNumber || ''
       }));
     }
   }, [user, language]);
@@ -4816,47 +4863,74 @@ const OnboardingScreen = ({ user, language, setLanguage }: any) => {
       setStep(3);
     }
     else if (step === 3 && formData.state && formData.district && formData.subDistrict) {
+      setStep(4);
+    }
+    else if (step === 4 && formData.phone.trim()) {
       handleFinish();
     }
   };
 
   const handleFinish = async () => {
-    if (!user?.uid) return;
+    const uid = user?.uid || auth.currentUser?.uid;
+    if (!uid) {
+      alert(language === 'ta' ? 'பயனர் அடையாளம் கிடைக்கவில்லை!' : 'User ID not found! Please try logging in again.');
+      return;
+    }
     setIsSaving(true);
     try {
-      const userRef = doc(db, 'users', user.uid);
-      await updateDoc(userRef, {
-        name: formData.name,
+      // 1. Update Firebase Auth Display Name if available
+      if (auth.currentUser) {
+        try {
+          await updateProfile(auth.currentUser, {
+            displayName: formData.name.trim()
+          });
+        } catch (authErr) {
+          console.error("Auth profile update non-blocking failure:", authErr);
+        }
+      }
+
+      // 2. Save location, name, and phone to Firestore
+      const userRef = doc(db, 'users', uid);
+      await setDoc(userRef, {
+        name: formData.name.trim(),
         state: formData.state,
         district: formData.district,
         subDistrict: formData.subDistrict,
         location: `${formData.subDistrict}, ${formData.district}`,
-        language: formData.prefLanguage,
+        phone: formData.phone.trim(),
+        language: formData.prefLanguage || language,
         updatedAt: serverTimestamp()
-      });
+      }, { merge: true });
 
       // Propagate name to any existing listings/conversations (unlikely for new user but good for consistency)
-      const listingsQuery = query(collection(db, 'listings'), where('farmerId', '==', user.uid));
+      const listingsQuery = query(collection(db, 'listings'), where('farmerId', '==', uid));
       const listingsSnap = await getDocs(listingsQuery);
       const listingUpdates = listingsSnap.docs.map(d => updateDoc(doc(db, 'listings', d.id), { 
-        farmerName: formData.name, 
+        farmerName: formData.name.trim(), 
+        phone: formData.phone.trim(),
         updatedAt: serverTimestamp() 
       }));
 
-      const convosQuery = query(collection(db, 'conversations'), where('participants', 'array-contains', user.uid));
+      const convosQuery = query(collection(db, 'conversations'), where('participants', 'array-contains', uid));
       const convosSnap = await getDocs(convosQuery);
       const convoUpdates = convosSnap.docs.map(d => updateDoc(doc(db, 'conversations', d.id), { 
-        [`participantNames.${user.uid}`]: formData.name, 
+        [`participantNames.${uid}`]: formData.name.trim(), 
         updatedAt: serverTimestamp() 
       }));
       
-      await Promise.all([...listingUpdates, ...convoUpdates]);
+      try {
+        await Promise.all([...listingUpdates, ...convoUpdates]);
+      } catch (subErr) {
+        console.error("Sub-documents propagation non-blocking feedback:", subErr);
+      }
       
-      // Removed manual onComplete - onSnapshot in App.tsx will handle the transition
-      // when it detects the profile is now complete.
-    } catch (err) {
+      if (onComplete) {
+        onComplete();
+      }
+    } catch (err: any) {
       console.error("Error saving onboarding data", err);
-      handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}`);
+      alert(language === 'ta' ? 'விபரங்களைச் சேமிப்பதில் பிழை ஏற்பட்டது. மீண்டும் முயற்சிக்கவும்.' : 'Error saving onboarding data. Please try again. Details: ' + (err?.message || err));
+      handleFirestoreError(err, OperationType.UPDATE, `users/${uid}`);
     } finally {
       setIsSaving(false);
     }
@@ -4867,7 +4941,7 @@ const OnboardingScreen = ({ user, language, setLanguage }: any) => {
     { code: 'ta', label: 'Tamil', native: 'தமிழ்' },
     { code: 'te', label: 'Telugu', native: 'తెలుగు' },
     { code: 'kn', label: 'Kannada', native: 'ಕನ್ನಡ' },
-    { code: 'ml', label: 'Malayalam', native: 'മലയാളം' }
+    { code: 'ml', label: 'Malayalam', native: 'മലയാളம்' }
   ];
 
   return (
@@ -4878,21 +4952,27 @@ const OnboardingScreen = ({ user, language, setLanguage }: any) => {
             <div className={`h-2 flex-1 rounded-full ${step >= 1 ? 'bg-primary' : 'bg-gray-100'}`} />
             <div className={`h-2 flex-1 rounded-full ${step >= 2 ? 'bg-primary' : 'bg-gray-100'}`} />
             <div className={`h-2 flex-1 rounded-full ${step >= 3 ? 'bg-primary' : 'bg-gray-100'}`} />
+            <div className={`h-2 flex-1 rounded-full ${step >= 4 ? 'bg-primary' : 'bg-gray-100'}`} />
           </div>
           <h1 className="text-3xl font-black text-gray-900 leading-tight">
             {step === 1 
               ? 'Choose your language'
               : step === 2
                 ? (language === 'ta' ? 'உங்களை நாங்கள் அழைக்க எப்படி?' : 'What should we call you?')
-                : (language === 'ta' ? 'உங்கள் பகுதி எது?' : 'Where are you based?')
+                : step === 3
+                  ? (language === 'ta' ? 'உங்கள் பகுதி எது?' : 'Where are you based?')
+                  : (language === 'ta' ? 'உங்கள் தொலைபேசி எண்?' : 'Your phone number?')
             }
           </h1>
           <p className="text-gray-500 font-medium mt-2 text-xs uppercase tracking-widest leading-relaxed">
             {step === 1
               ? 'Please select your preferred language.'
-              : language === 'ta' 
-                ? 'உங்கள் அனுபவத்தைத் தனிப்பயனாக்க உதவும்.' 
-                : 'Help us personalize your experience.'}
+              : step === 2
+                ? (language === 'ta' ? 'உங்கள் அனுபவத்தைத் தனிப்பயனாக்க உதவும்.' : 'Help us personalize your experience.')
+                : step === 3
+                  ? (language === 'ta' ? 'விற்பனையாளர்கள் உங்களை தொடர்பு கொள்ள இது உதவும்.' : 'Find listings and buyers near you.')
+                  : (language === 'ta' ? 'பயிர்களை வாங்கவும் விற்கவும் தொடர்பு கொள்ள இந்த எண் தேவைப்படும்.' : 'Necessary for seamless contact between buyers and sellers.')
+            }
           </p>
         </div>
 
@@ -4934,7 +5014,7 @@ const OnboardingScreen = ({ user, language, setLanguage }: any) => {
                 onChange={(e) => setFormData({...formData, name: e.target.value})}
               />
             </div>
-          ) : (
+          ) : step === 3 ? (
             <div className="space-y-4">
               <div className="space-y-2">
                 <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">
@@ -4980,6 +5060,23 @@ const OnboardingScreen = ({ user, language, setLanguage }: any) => {
                 </select>
               </div>
             </div>
+          ) : (
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">
+                {language === 'ta' ? 'தொலைபேசி எண்' : 'Phone Number'}
+              </label>
+              <input 
+                type="tel"
+                placeholder={language === 'ta' ? '10 இலக்க தொலைபேசி எண்ணை உள்ளிடவும்' : 'Enter 10-digit phone number'}
+                maxLength={10}
+                className="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl p-4 font-bold focus:border-primary focus:bg-white outline-none transition-all"
+                value={formData.phone}
+                onChange={(e) => {
+                  const val = e.target.value.replace(/\D/g, '');
+                  setFormData({...formData, phone: val});
+                }}
+              />
+            </div>
           )}
         </div>
 
@@ -4989,7 +5086,8 @@ const OnboardingScreen = ({ user, language, setLanguage }: any) => {
               isSaving || 
               (step === 1 && !formData.prefLanguage) ||
               (step === 2 && !formData.name.trim()) || 
-              (step === 3 && (!formData.state || !formData.district || !formData.subDistrict))
+              (step === 3 && (!formData.state || !formData.district || !formData.subDistrict)) ||
+              (step === 4 && formData.phone.trim().length !== 10)
             }
             onClick={handleNext}
             className="w-full bg-primary text-white p-5 rounded-[24px] font-black text-lg shadow-xl shadow-primary/20 hover:scale-[1.02] active:scale-[0.98] transition-all disabled:grayscale disabled:opacity-50 flex items-center justify-center gap-2"
@@ -4998,7 +5096,7 @@ const OnboardingScreen = ({ user, language, setLanguage }: any) => {
               <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin" />
             ) : (
               <>
-                {step < 3 ? (language === 'ta' ? 'அடுத்தது' : 'Continue') : (language === 'ta' ? 'முடிக்க' : 'Complete Setup')}
+                {step < 4 ? (language === 'ta' ? 'அடுத்தது' : 'Continue') : (language === 'ta' ? 'முடிக்க' : 'Complete Setup')}
                 <ChevronRight size={20} />
               </>
             )}
