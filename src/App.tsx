@@ -725,7 +725,8 @@ const App = () => {
         lastMessageTime: 'Just now',
         lastMessageSenderId: auth.currentUser?.uid,
         unreadCount: increment(1),
-        updatedAt: serverTimestamp()
+        updatedAt: serverTimestamp(),
+        deletedUsers: {}
       });
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, `conversations/${convoId}/messages`);
@@ -978,6 +979,7 @@ const App = () => {
               conversation={activeConversation} 
               onSendMessage={(text) => handleSendMessage(activeConversation.id, text)}
               onBack={() => navigateTo('ChatList')} 
+              onViewProfile={(uid) => navigateTo('Profile', uid)}
               language={language}
             />
           )}
@@ -3403,7 +3405,7 @@ const ProfileScreen = ({ user, viewingUserId, onLogout, onNavigate, language, se
           </div>
         )}
 
-        {!isEditing && (
+        {isOwnProfile && !isEditing && (
           <button 
             onClick={onLogout}
             className="w-full p-5 bg-red-50 text-red-600 rounded-[40px] font-black uppercase tracking-[0.2em] text-[10px] shadow-sm shadow-red-100 flex items-center justify-center gap-2 active:scale-95 transition-transform"
@@ -3791,7 +3793,23 @@ const ChatListScreen = ({ conversations, onNavigate, onBack, language }: { conve
   }, [conversations]);
 
   return (
-    <div className="bg-gray-50 min-h-screen">
+    <div className="bg-gray-50 min-h-screen relative">
+      <AnimatePresence>
+        {activeMenuId && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => {
+              setActiveMenuId(null);
+              setConfirmDeleteId(null);
+            }}
+            className="fixed inset-0 bg-black/40 backdrop-blur-md z-20 pointer-events-auto"
+            style={{ willChange: 'opacity, backdrop-filter' }}
+          />
+        )}
+      </AnimatePresence>
+
       <div className="bg-primary text-white p-6 pt-10 shadow-lg flex items-center gap-4">
         <button onClick={onBack} className="bg-white/20 p-2 rounded-full backdrop-blur-sm">
           <ChevronLeft size={24} />
@@ -4004,10 +4022,11 @@ const ChatListScreen = ({ conversations, onNavigate, onBack, language }: { conve
   );
 };
 
-const ChatRoomScreen = ({ conversation, onSendMessage, onBack, language }: { 
+const ChatRoomScreen = ({ conversation, onSendMessage, onBack, onViewProfile, language }: { 
   conversation: Conversation, 
   onSendMessage: (text: string) => void,
   onBack: () => void,
+  onViewProfile?: (userId: string) => void,
   language: 'ta' | 'en'
 }) => {
   const [inputText, setInputText] = useState('');
@@ -4306,7 +4325,15 @@ const ChatRoomScreen = ({ conversation, onSendMessage, onBack, language }: {
         <button onClick={onBack} className="p-2 -ml-2 rounded-full hover:bg-gray-100 transition-colors">
           <ChevronLeft size={24} />
         </button>
-        <div className="flex items-center gap-3">
+        <button 
+          onClick={() => {
+            const otherParticipantId = conversation.participants?.find(p => p !== auth.currentUser?.uid);
+            if (otherParticipantId && onViewProfile) {
+              onViewProfile(otherParticipantId);
+            }
+          }}
+          className="flex items-center gap-3 text-left hover:opacity-80 transition-opacity focus:outline-none"
+        >
           <div className="w-10 h-10 bg-primary/10 rounded-xl flex items-center justify-center font-black text-primary overflow-hidden relative">
              <div className="absolute inset-0 bg-gradient-to-br from-primary/20 to-transparent opacity-50" />
             <span className="relative z-10">
@@ -4367,7 +4394,7 @@ const ChatRoomScreen = ({ conversation, onSendMessage, onBack, language }: {
               )}
             </AnimatePresence>
           </div>
-        </div>
+        </button>
 
         {/* Top-right menu inside Chat Room */}
         <div className="ml-auto relative" ref={headerMenuRef}>
